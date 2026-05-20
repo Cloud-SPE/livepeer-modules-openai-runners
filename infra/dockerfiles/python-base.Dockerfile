@@ -26,7 +26,7 @@ RUN apt-get update \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 RUN groupadd -g 1000 runner \
-    && useradd -u 1000 -g runner -s /usr/sbin/nologin -M -d /home/runner runner \
+    && useradd -u 1000 -g runner -s /usr/sbin/nologin -m -d /home/runner runner \
     && uv venv "$VIRTUAL_ENV" \
     && chown -R runner:runner "$VIRTUAL_ENV"
 

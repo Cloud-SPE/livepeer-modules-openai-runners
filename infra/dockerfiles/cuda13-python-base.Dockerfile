@@ -33,7 +33,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 ARG PYTHON_VERSION
 RUN (userdel -r ubuntu 2>/dev/null || true) \
     && groupadd -g 1000 runner \
-    && useradd -u 1000 -g runner -s /usr/sbin/nologin -M -d /home/runner runner \
+    && useradd -u 1000 -g runner -s /usr/sbin/nologin -m -d /home/runner runner \
     && uv python install ${PYTHON_VERSION} \
     && uv venv --python ${PYTHON_VERSION} "$VIRTUAL_ENV" \
     && chown -R runner:runner "$VIRTUAL_ENV" /opt/python

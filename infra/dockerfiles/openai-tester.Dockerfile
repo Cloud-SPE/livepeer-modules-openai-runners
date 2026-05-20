@@ -12,7 +12,7 @@ COPY openai-tester/test-*.mjs openai-tester/generate-test-audio.sh openai-tester
 FROM node:${NODE_VERSION}-alpine
 WORKDIR /app
 RUN apk add --no-cache ffmpeg \
-    && adduser -D -H runner
+    && adduser -D runner
 USER runner
 COPY --from=build --chown=runner /app /app
 ENV OPENAI_BASE_URL=http://localhost:8090/v1

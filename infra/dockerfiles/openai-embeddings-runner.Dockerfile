@@ -15,7 +15,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 
 FROM alpine:${ALPINE_VERSION}
 RUN apk add --no-cache curl ca-certificates \
-    && adduser -D -H runner
+    && adduser -D runner
 USER runner
 ENV RUNNER_ADDR=:8080 \
     CAPABILITY_NAME=openai-text-embeddings \
