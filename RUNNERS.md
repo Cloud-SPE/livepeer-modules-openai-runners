@@ -546,7 +546,7 @@ OpenAI SDK. One test script per capability.
 | Env var | Default | Purpose |
 |---|---|---|
 | `OPENAI_BASE_URL` | `http://localhost:8090/v1` | Runner endpoint |
-| `OPENAI_API_KEY` | `local-dev-no-auth` | Bearer token (runners ignore) |
+| `OPENAI_API_KEY` | *(required at run time; image has no default)* | Bearer token. Runners ignore the value — `local-dev-no-auth` is fine for local smoke; a real key is only needed when hitting a remote gateway. |
 | `MODEL` | varies per script | Model alias |
 
 ### Run
