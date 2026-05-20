@@ -1,0 +1,116 @@
+name: doc-gardening
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # Mondays 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  link-check:
+    runs-on: ubuntu-latest
+    outputs:
+      broken: ${{ steps.lychee.outputs.exit_code != '0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run lychee link checker
+        id: lychee
+        uses: lycheeverse/lychee-action@v2
+        continue-on-error: true
+        with:
+          args: >-
+            --no-progress
+            --verbose
+            --max-concurrency 4
+            --exclude-loopback
+            './**/*.md'
+          fail: false
+          output: /tmp/lychee.out
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lychee-report
+          path: /tmp/lychee.out
+
+  todo-scan:
+    runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.scan.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: scan
+        name: Count TODO / FIXME / XXX markers
+        run: |
+          count=$(grep -RIn --include='*.md' --include='*.py' --include='*.go' --include='*.mjs' --include='*.sh' --include='Dockerfile*' -E '(TODO|FIXME|XXX)' . | wc -l || true)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          grep -RIn --include='*.md' --include='*.py' --include='*.go' --include='*.mjs' --include='*.sh' --include='Dockerfile*' -E '(TODO|FIXME|XXX)' . > /tmp/todos.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: todo-report
+          path: /tmp/todos.txt
+
+  tracking-issue:
+    runs-on: ubuntu-latest
+    needs: [link-check, todo-scan]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: lychee-report
+          path: /tmp
+      - uses: actions/download-artifact@v4
+        with:
+          name: todo-report
+          path: /tmp
+      - name: Open or update tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const linkReport = fs.existsSync('/tmp/lychee.out') ? fs.readFileSync('/tmp/lychee.out', 'utf8').slice(0, 8000) : '(no link report)';
+            const todoReport = fs.existsSync('/tmp/todos.txt') ? fs.readFileSync('/tmp/todos.txt', 'utf8').slice(0, 8000) : '(no todo report)';
+            const body = [
+              '## Doc gardening — weekly report',
+              `Run: ${context.runId} on ${new Date().toISOString().slice(0,10)}`,
+              '',
+              '### Broken markdown links (lychee)',
+              '```',
+              linkReport.trim() || '(none)',
+              '```',
+              '',
+              '### TODO / FIXME / XXX markers',
+              '```',
+              todoReport.trim() || '(none)',
+              '```',
+            ].join('\n');
+
+            const title = 'Doc gardening tracking';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'doc-gardening',
+              per_page: 1,
+            });
+
+            if (issues.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['doc-gardening'],
+              });
+            } else {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues[0].number,
+                body,
+              });
+            }
