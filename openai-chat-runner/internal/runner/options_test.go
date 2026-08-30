@@ -93,7 +93,7 @@ func TestBuildOptionsPayload_OperatorOverridesDiscoveredModel(t *testing.T) {
 }
 
 func TestBuildOptionsPayload_AdvertisesUpstreamKind(t *testing.T) {
-	for _, kind := range []string{"vllm", "ollama"} {
+	for _, kind := range []string{"vllm", "openai", "dashscope"} {
 		out := buildOptionsPayload([]string{"m"}, optionsConfig{upstreamKind: kind})
 		if got := out["upstream_kind"]; got != kind {
 			t.Errorf("kind=%s: got %v, want %s", kind, got, kind)

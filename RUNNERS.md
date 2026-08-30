@@ -10,7 +10,7 @@ build, deployment notes. Cross-cutting invariants live in
 ## openai-chat-runner
 
 Streaming-aware OpenAI chat-completions proxy. Sits between the capability
-broker and a vLLM or Ollama backend (or any OpenAI-compatible upstream).
+broker and a local vLLM backend or a supported OpenAI-compatible vendor.
 Its added value over a transparent proxy is **token counting for streaming
 requests**:
 
@@ -34,8 +34,11 @@ requests**:
 | Env var | Default | Purpose |
 |---|---|---|
 | `RUNNER_ADDR` | `:8080` | HTTP bind |
-| `UPSTREAM_URL` | (required) | e.g. `http://vllm_chat:8000/v1/chat/completions` or `http://ollama:11434/v1/chat/completions` |
-| `UPSTREAM_KIND` | `vllm` | One of `vllm`, `ollama`. Advertised in `/options`. |
+| `UPSTREAM_URL` | (required) | e.g. `http://vllm_chat:8000/v1/chat/completions`; vendor endpoints are shown below. |
+| `UPSTREAM_KIND` | `vllm` | Trimmed value; exactly one of `vllm`, `openai`, or `dashscope`. Any other value is a startup configuration error. Advertised in `/options` and used as bounded observability context. |
+| `UPSTREAM_API_KEY` | empty | Operator-managed vendor secret. Surrounding whitespace is trimmed. When non-empty, outbound model-discovery and chat requests receive exactly `Authorization: Bearer <key>`; inbound authorization is never forwarded. |
+| `MODEL_ALLOWLIST` | empty | Comma-separated, whitespace-trimmed exact model IDs. Empty/unset preserves discovery and requests. Empty entries and duplicates are startup errors. A configured set filters `/v1/models` and `/options` without reordering, and disallowed chat models receive 400 before proxying. |
+| `OUTPUT_TOKEN_WEIGHT` | empty | Comma-separated `model=weight` map, with trimmed model IDs and base-10 non-negative integer weights. Empty/unset preserves existing accounting. Malformed, duplicate, fractional, negative, or values not representable as `uint64` are startup errors. |
 | `CAPABILITY_NAME` | `openai-chat-completions` | Path segment for `/options` |
 | `USAGE_FIELD` | `total_tokens` | Which `usage.*` field to bill on |
 | `MODEL_DISCOVERY_RETRIES` | `10` | Startup retries against upstream `/v1/models` |
@@ -61,12 +64,52 @@ For streaming requests, the runner auto-injects
 `stream_options.include_usage: true` if absent.
 
 - **vLLM** honours `include_usage` on all supported releases. Works out of the box.
-- **Ollama** honours `include_usage` starting in v0.5. Older Ollama silently
-  drops the flag — the final SSE frame has no `usage` object and the runner
-  bills 0 tokens. Upgrade Ollama before deploying.
+- **OpenAI and DashScope** accept the OpenAI-compatible
+  `stream_options.include_usage` request shape used by the vendor overlays.
 
 Clients can pre-set the flag explicitly (including `include_usage: false`,
 which the runner honours).
+
+When a request model matches `OUTPUT_TOKEN_WEIGHT`, work units are
+`prompt_tokens + completion_tokens * weight`. Streaming and non-streaming use
+the same checked integer calculation; overflow is reported as a runner error,
+never rounded. A model without a configured weight follows `USAGE_FIELD`
+exactly as before. With all four vendor knobs unset, request/response bytes,
+model ordering, headers/trailers, and existing `USAGE_FIELD` behavior are
+unchanged, apart from the bounded `upstream_kind=vllm` observability context.
+
+### Vendor pass-through
+
+OpenAI:
+
+```bash
+UPSTREAM_KIND=openai
+UPSTREAM_URL=https://api.openai.com/v1/chat/completions
+UPSTREAM_API_KEY=<operator-secret>
+```
+
+DashScope international OpenAI-compatible endpoint:
+
+```bash
+UPSTREAM_KIND=dashscope
+UPSTREAM_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions
+UPSTREAM_API_KEY=<operator-secret>
+```
+
+The matching compose overlays are
+`infra/compose/docker-compose.openai-chat-runner.openai.yml` and
+`infra/compose/docker-compose.openai-chat-runner.dashscope.yml`. They expose
+the optional settings through environment substitution and do not contain a
+credential.
+
+Vendor operation is an operator responsibility. The operator supplies,
+rotates, scopes, and protects `UPSTREAM_API_KEY`, ensures the chosen models and
+weights match the vendor account, and bears vendor charges, quota, availability,
+and policy risk. Upstream 401, 403, 429, 5xx, and transport failures emit the
+runner-error signal so the broker refunds the Livepeer job. That refund does
+not reverse any charge independently assessed by the vendor. Logs may identify
+the bounded upstream kind, HTTP status, and vendor request ID, but never the
+secret or vendor response body.
 
 ### Build
 

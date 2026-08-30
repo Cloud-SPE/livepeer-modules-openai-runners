@@ -2,6 +2,13 @@
 
 All notable changes to this repo. Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+- **Phase 0 vendor pass-through**: `openai-chat-runner` now supports bounded
+  OpenAI and DashScope upstream kinds, operator-supplied outbound bearer auth,
+  exact model allowlisting, checked per-model output-token weighting, sanitized
+  refundable vendor failures, and dedicated vendor compose overlays.
+
 ## [v1.3.0] — 2026-05-19
 
 Initial release of the standalone runner repo. Includes:

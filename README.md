@@ -80,6 +80,8 @@ for the full per-runner list, and [`infra/env/`](./infra/env/) for copy-able
 Per-backend compose overlays live in [`infra/compose/`](./infra/compose/):
 
 - `docker-compose.openai-chat-runner.yml` — chat-runner sidecar.
+- `docker-compose.openai-chat-runner.openai.yml` — chat-runner configured for OpenAI vendor pass-through.
+- `docker-compose.openai-chat-runner.dashscope.yml` — chat-runner configured for DashScope international vendor pass-through.
 - `docker-compose.openai-embeddings-runner.yml` — embeddings-runner sidecar.
 - `docker-compose.vllm.chat.yml` — vLLM upstream for chat.
 - `docker-compose.vllm.embeddings.yml` — vLLM upstream for embeddings.

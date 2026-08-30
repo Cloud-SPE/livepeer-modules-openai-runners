@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -42,39 +43,32 @@ const (
 	defaultCapability   = "openai-chat-completions"
 	defaultMaxBodyBytes = int64(5 << 20)
 	workUnitsTrailer    = "X-Livepeer-Work-Units"
+	runnerErrorHeader   = "X-Livepeer-Runner-Error"
 )
 
 // Run starts the runner with environment-driven config and blocks.
 func Run() {
-	addr := env("RUNNER_ADDR", ":8080")
-	upstream := env("UPSTREAM_URL", "")
-	if upstream == "" {
-		log.Fatalf("UPSTREAM_URL is required, e.g. http://HOST:PORT%s", defaultEndpoint)
+	cfg, err := configFromEnv()
+	if err != nil {
+		log.Fatalf("configuration error: %v", err)
 	}
-	capability := env("CAPABILITY_NAME", defaultCapability)
-	usageField := env("USAGE_FIELD", "total_tokens")
-	upstreamKind := env("UPSTREAM_KIND", "vllm")
-	maxBodyBytes := defaultMaxBodyBytes
-	optionsCfg := optionsConfigFromEnv()
-	optionsCfg.upstreamKind = upstreamKind
 
 	client := &http.Client{Transport: newTransport()}
 
 	var discoveredModels atomic.Value
 	go func() {
-		retries := envInt("MODEL_DISCOVERY_RETRIES", 10)
-		ids, err := discoverModelsWithRetry(upstreamBase(upstream), retries, 10*time.Second)
+		ids, err := discoverModelsWithRetryConfig(client, upstreamBase(cfg.upstreamURL), cfg, cfg.discoveryRetries, 10*time.Second)
 		if err != nil {
 			log.Fatalf("model discovery failed: %v", err)
 		}
 		discoveredModels.Store(ids)
-		log.Printf("discovered %d model(s): %v", len(ids), ids)
+		slog.Info("models discovered", "upstream_kind", cfg.upstreamKind, "count", len(ids))
 	}()
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc(defaultEndpoint, func(w http.ResponseWriter, r *http.Request) {
-		handleChatCompletions(w, r, client, upstream, maxBodyBytes, usageField, &discoveredModels)
+		handleChatCompletionsWithConfig(w, r, client, cfg, &discoveredModels)
 	})
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -87,27 +81,36 @@ func Run() {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "models": models})
 	})
 
-	mux.HandleFunc("/"+capability+"/options", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/"+cfg.capability+"/options", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		models, _ := loadModels(&discoveredModels)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(buildOptionsPayload(models, optionsCfg))
+		_ = json.NewEncoder(w).Encode(buildOptionsPayload(models, cfg.options))
 	})
 
-	log.Printf("openai-chat-runner listening on %s capability=%s upstream=%s upstream_kind=%s usage_field=%s",
-		addr, capability, upstream, upstreamKind, usageField)
+	slog.Info("openai-chat-runner listening", "addr", cfg.addr, "capability", cfg.capability,
+		"upstream", cfg.upstreamURL, "upstream_kind", cfg.upstreamKind, "usage_field", cfg.usageField)
 	srv := &http.Server{
-		Addr:              addr,
+		Addr:              cfg.addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Fatal(srv.ListenAndServe())
 }
 
+// handleChatCompletions retains the original test-facing helper with the
+// legacy defaults. Production passes the startup-loaded typed configuration to
+// handleChatCompletionsWithConfig.
 func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.Client, upstream string, maxBodyBytes int64, usageField string, discoveredModels *atomic.Value) {
+	handleChatCompletionsWithConfig(w, r, client, config{
+		upstreamURL: upstream, upstreamKind: upstreamVLLM, maxBodyBytes: maxBodyBytes, usageField: usageField,
+	}, discoveredModels)
+}
+
+func handleChatCompletionsWithConfig(w http.ResponseWriter, r *http.Request, client *http.Client, cfg config, discoveredModels *atomic.Value) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -124,7 +127,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 		defer cancel()
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, cfg.maxBodyBytes))
 	if err != nil {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
@@ -133,6 +136,16 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 
 	// Auto-inject include_usage on streaming requests. Non-streaming
 	// requests pass through untouched.
+	model, err := requestModel(bodyBytes)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "request body is not valid JSON", "invalid_request_error")
+		return
+	}
+	if !cfg.modelAllowed(model) {
+		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("model %q is not allowed", model), "invalid_request_error")
+		return
+	}
+
 	rewritten, isStream, err := ensureIncludeUsage(bodyBytes)
 	if err != nil {
 		http.Error(w, "request body is not valid JSON", http.StatusBadRequest)
@@ -140,7 +153,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 	}
 	bodyBytes = rewritten
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.upstreamURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		http.Error(w, "failed to create upstream request", http.StatusBadGateway)
 		return
@@ -149,6 +162,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 	copyHeader(req.Header, r.Header, []string{"Content-Type", "Accept"})
 	req.Header.Del("Livepeer")
 	req.Header.Del("Authorization")
+	if cfg.upstreamAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.upstreamAPIKey)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -156,21 +172,33 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
 			status = http.StatusGatewayTimeout
 		}
-		http.Error(w, "upstream request failed: "+err.Error(), status)
+		slog.Error("upstream request failed", "upstream_kind", cfg.upstreamKind, "status", status)
+		writeRunnerError(w, status, "upstream request failed")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if isStream && guardSSEContentType(resp.Header) == nil {
-		writeStreamingResponse(w, resp, usageField)
+	if isRefundableUpstreamStatus(resp.StatusCode) {
+		slog.Error("upstream vendor error", "upstream_kind", cfg.upstreamKind, "status", resp.StatusCode,
+			"vendor_request_id", vendorRequestID(resp.Header))
+		writeRunnerError(w, resp.StatusCode, "upstream request failed")
 		return
 	}
-	writePassThroughResponse(w, resp)
+
+	if isStream && guardSSEContentType(resp.Header) == nil {
+		writeStreamingResponseWeighted(w, resp, cfg.usageField, model, cfg.outputWeights)
+		return
+	}
+	writePassThroughResponseWeighted(w, resp, cfg.usageField, model, cfg.outputWeights)
 }
 
 // writeStreamingResponse forwards an SSE response while counting
 // tokens, then emits X-Livepeer-Work-Units as an HTTP trailer.
 func writeStreamingResponse(w http.ResponseWriter, resp *http.Response, usageField string) {
+	writeStreamingResponseWeighted(w, resp, usageField, "", nil)
+}
+
+func writeStreamingResponseWeighted(w http.ResponseWriter, resp *http.Response, usageField, model string, weights map[string]uint64) {
 	// Declare the trailer BEFORE WriteHeader; Go's server promotes
 	// declared trailers to the wire trailer slot when set after the
 	// body. Tracks the broker's http-stream driver pattern.
@@ -185,7 +213,7 @@ func writeStreamingResponse(w http.ResponseWriter, resp *http.Response, usageFie
 		}
 	}
 
-	total := streamAndCountUsage(w, resp.Body, usageField, flush)
+	total := streamAndCalculateUsage(w, resp.Body, usageField, model, weights, flush)
 	w.Header().Set(workUnitsTrailer, fmt.Sprintf("%d", total))
 }
 
@@ -211,6 +239,92 @@ func writePassThroughResponse(w http.ResponseWriter, resp *http.Response) {
 	}
 }
 
+func writePassThroughResponseWeighted(w http.ResponseWriter, resp *http.Response, usageField, model string, weights map[string]uint64) {
+	if _, weighted := weights[model]; !weighted {
+		writePassThroughResponse(w, resp)
+		return
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		writeRunnerError(w, http.StatusBadGateway, "upstream response failed")
+		return
+	}
+	rewritten, err := rewriteUsageWorkUnits(body, usageField, model, weights)
+	if err != nil {
+		writeRunnerError(w, http.StatusBadGateway, "upstream response contained invalid usage")
+		return
+	}
+	copyAllHeaders(w.Header(), resp.Header)
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(rewritten)
+}
+
+func requestModel(body []byte) (string, error) {
+	var request struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		return "", err
+	}
+	return request.Model, nil
+}
+
+func rewriteUsageWorkUnits(body []byte, usageField, model string, weights map[string]uint64) ([]byte, error) {
+	var doc map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&doc); err != nil {
+		return nil, err
+	}
+	rawUsage, ok := doc["usage"]
+	if !ok {
+		return nil, fmt.Errorf("missing usage")
+	}
+	encodedUsage, err := json.Marshal(rawUsage)
+	if err != nil {
+		return nil, err
+	}
+	var usage usageFields
+	if err := json.Unmarshal(encodedUsage, &usage); err != nil {
+		return nil, err
+	}
+	units, representable := calculateWorkUnits(usage, usageField, model, weights)
+	if !representable {
+		return nil, fmt.Errorf("weighted usage overflows uint64")
+	}
+	usageMap, ok := rawUsage.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("usage is not an object")
+	}
+	usageMap["total_tokens"] = units
+	return json.Marshal(doc)
+}
+
+func isRefundableUpstreamStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusTooManyRequests || status >= 500
+}
+
+func writeRunnerError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set(runnerErrorHeader, "true")
+	writeOpenAIError(w, status, message, "upstream_error")
+}
+
+func writeOpenAIError(w http.ResponseWriter, status int, message, errorType string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": message, "type": errorType}})
+}
+
+func vendorRequestID(header http.Header) string {
+	for _, name := range []string{"X-Request-ID", "Request-ID", "X-Dashscope-Request-ID"} {
+		if value := header.Get(name); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // optionsConfig captures the operator-supplied metadata the runner
 // surfaces via /<capability>/options. These map 1:1 to the fields the
 // broker's chat-options discovery merges into the capability's `extra`
@@ -223,7 +337,7 @@ type optionsConfig struct {
 	reasoningParser string
 	toolCallParser  string
 	quantization    string
-	upstreamKind    string // "vllm" or "ollama"; advertised in payload
+	upstreamKind    string // bounded vendor kind; advertised in payload
 }
 
 func optionsConfigFromEnv() optionsConfig {
@@ -339,28 +453,49 @@ func upstreamBase(upstream string) string {
 	if err != nil {
 		return upstream
 	}
-	u.Path = ""
+	const completionSuffix = "/v1/chat/completions"
+	if strings.HasSuffix(strings.TrimRight(u.Path, "/"), completionSuffix) {
+		u.Path = strings.TrimSuffix(strings.TrimRight(u.Path, "/"), completionSuffix)
+	} else {
+		u.Path = strings.TrimRight(u.Path, "/")
+	}
 	u.RawPath = ""
 	u.RawQuery = ""
 	return u.String()
 }
 
 func discoverModelsWithRetry(base string, retries int, delay time.Duration) ([]string, error) {
+	return discoverModelsWithRetryConfig(http.DefaultClient, base, config{}, retries, delay)
+}
+
+func discoverModelsWithRetryConfig(client *http.Client, base string, cfg config, retries int, delay time.Duration) ([]string, error) {
 	for i := 0; i < retries; i++ {
 		if i > 0 {
 			time.Sleep(delay)
 		}
-		ids, err := discoverModels(base)
+		ids, err := discoverModelsWithConfig(client, base, cfg)
 		if err == nil {
 			return ids, nil
 		}
-		log.Printf("model discovery attempt %d/%d failed: %v", i+1, retries, err)
+		slog.Warn("model discovery failed", "upstream_kind", cfg.upstreamKind,
+			"attempt", i+1, "attempts", retries, "error", err)
 	}
 	return nil, fmt.Errorf("model discovery failed after %d attempts", retries)
 }
 
 func discoverModels(base string) ([]string, error) {
-	resp, err := http.Get(base + "/v1/models")
+	return discoverModelsWithConfig(http.DefaultClient, base, config{})
+}
+
+func discoverModelsWithConfig(client *http.Client, base string, cfg config) ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet, base+"/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.upstreamAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.upstreamAPIKey)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -379,9 +514,14 @@ func discoverModels(base string) ([]string, error) {
 	if len(result.Data) == 0 {
 		return nil, fmt.Errorf("no models returned from %s/v1/models", base)
 	}
-	ids := make([]string, len(result.Data))
-	for i, m := range result.Data {
-		ids[i] = m.ID
+	ids := make([]string, 0, len(result.Data))
+	for _, m := range result.Data {
+		if cfg.modelAllowed(m.ID) {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("no upstream models matched MODEL_ALLOWLIST")
 	}
 	return ids, nil
 }
