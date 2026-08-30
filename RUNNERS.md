@@ -17,8 +17,10 @@ requests**:
 - For `stream: true` requests, scans the upstream SSE response, accumulates
   the final `usage.total_tokens`, and reports it back to the broker via the
   `X-Livepeer-Work-Units` HTTP trailer.
-- For non-streaming requests, passes the response through unchanged; the
-  broker reads `usage.total_tokens` from the body with the existing
+- For non-streaming requests, passes the response body through unchanged. A
+  model configured in `OUTPUT_TOKEN_WEIGHT` receives an
+  `X-Livepeer-Work-Units` response header; otherwise the broker continues to
+  read the configured `usage.*` field from the body with its existing
   `openai-usage` extractor.
 
 ### Endpoints
@@ -72,11 +74,13 @@ which the runner honours).
 
 When a request model matches `OUTPUT_TOKEN_WEIGHT`, work units are
 `prompt_tokens + completion_tokens * weight`. Streaming and non-streaming use
-the same checked integer calculation; overflow is reported as a runner error,
-never rounded. A model without a configured weight follows `USAGE_FIELD`
-exactly as before. With all four vendor knobs unset, request/response bytes,
-model ordering, headers/trailers, and existing `USAGE_FIELD` behavior are
-unchanged, apart from the bounded `upstream_kind=vllm` observability context.
+the same checked integer calculation; streaming reports it in the existing
+trailer and non-streaming reports it in the response header. Overflow is
+reported as a runner error, never rounded. A model without a configured weight
+follows `USAGE_FIELD` exactly as before. With all four vendor knobs unset,
+request/response bytes, model ordering, headers/trailers, and existing
+`USAGE_FIELD` behavior are unchanged, apart from the bounded
+`upstream_kind=vllm` observability context.
 
 ### Vendor pass-through
 

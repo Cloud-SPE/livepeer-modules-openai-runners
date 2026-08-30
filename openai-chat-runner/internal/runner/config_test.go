@@ -62,10 +62,27 @@ func TestParseOutputTokenWeights(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("weights = %#v; want %#v", got, want)
 	}
-	for _, raw := range []string{"model-a", "model-a=-1", "model-a=1.5", "model-a=1,model-a=2", "=2"} {
+	for _, raw := range []string{
+		"model-a",
+		"model-a=-1",
+		"model-a=1.5",
+		"model-a=1,model-a=2",
+		"model-a=18446744073709551616",
+		"=2",
+	} {
 		if _, err := parseOutputTokenWeights(raw); err == nil {
 			t.Errorf("parseOutputTokenWeights(%q) should fail", raw)
 		}
+	}
+}
+
+func TestConfigFromEnvRejectsMalformedOutputTokenWeight(t *testing.T) {
+	t.Setenv("UPSTREAM_URL", "http://upstream.test/v1/chat/completions")
+	t.Setenv("OUTPUT_TOKEN_WEIGHT", "model-a=-1")
+
+	_, err := configFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "OUTPUT_TOKEN_WEIGHT") || !strings.Contains(err.Error(), "model-a") {
+		t.Fatalf("configuration error = %v; want knob and model name", err)
 	}
 }
 

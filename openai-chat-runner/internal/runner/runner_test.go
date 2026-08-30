@@ -85,10 +85,11 @@ func TestHandler_StreamingEmitsTrailer(t *testing.T) {
 }
 
 func TestHandler_NonStreamingPassesThrough(t *testing.T) {
+	const responseBody = "  {\n  \"id\": \"x\", \"usage\": {\"total_tokens\": 17}\n}\n"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"id":"x","usage":{"total_tokens":17}}`)
+		_, _ = io.WriteString(w, responseBody)
 	}))
 	t.Cleanup(upstream.Close)
 
@@ -102,8 +103,8 @@ func TestHandler_NonStreamingPassesThrough(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rec.Code)
 	}
-	if !bytes.Contains(rec.Body.Bytes(), []byte(`"total_tokens":17`)) {
-		t.Fatalf("response body missing forwarded JSON: %s", rec.Body.String())
+	if rec.Body.String() != responseBody {
+		t.Fatalf("response body changed with OUTPUT_TOKEN_WEIGHT unset:\n got: %q\nwant: %q", rec.Body.String(), responseBody)
 	}
 	// No trailer should be set on non-streaming responses; the broker
 	// uses openai-usage on the body for those.
@@ -302,7 +303,7 @@ func TestHandler_WeightedAccountingMatchesAcrossModes(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, `{"usage":{"prompt_tokens":12,"completion_tokens":30,"total_tokens":42}}`)
+				_, _ = io.WriteString(w, ` { "usage": { "prompt_tokens": 12, "completion_tokens": 30, "total_tokens": 42 } } `)
 			}))
 			t.Cleanup(upstream.Close)
 			handler := newConfiguredRunner(t, upstream.URL, func(cfg *config) {
@@ -318,14 +319,50 @@ func TestHandler_WeightedAccountingMatchesAcrossModes(t *testing.T) {
 				}
 				return
 			}
-			var response struct {
-				Usage usageFields `json:"usage"`
+			if got := rec.Header().Get(workUnitsTrailer); got != "72" {
+				t.Fatalf("non-streaming work units = %q; want 72", got)
 			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-				t.Fatal(err)
+			const wantBody = ` { "usage": { "prompt_tokens": 12, "completion_tokens": 30, "total_tokens": 42 } } `
+			if rec.Body.String() != wantBody {
+				t.Fatalf("non-streaming body changed:\n got: %q\nwant: %q", rec.Body.String(), wantBody)
 			}
-			if response.Usage.TotalTokens != weighted {
-				t.Fatalf("non-streaming total_tokens = %d; want %d", response.Usage.TotalTokens, weighted)
+		})
+	}
+}
+
+func TestHandler_UnweightedModelRetainsUsageFieldBehavior(t *testing.T) {
+	const responseBody = ` { "usage": { "prompt_tokens": 12, "completion_tokens": 30, "total_tokens": 42 } } `
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-streaming", true: "streaming"}[stream], func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, vllmStreamFixture)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, responseBody)
+			}))
+			t.Cleanup(upstream.Close)
+			handler := newConfiguredRunner(t, upstream.URL, func(cfg *config) {
+				cfg.usageField = "completion_tokens"
+				cfg.outputWeights = map[string]uint64{"weighted-model": 9}
+			})
+			body, _ := json.Marshal(map[string]any{"model": "allowed", "stream": stream})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, defaultEndpoint, bytes.NewReader(body)))
+
+			if stream {
+				if got := rec.Header().Get(workUnitsTrailer); got != "30" {
+					t.Fatalf("streaming completion_tokens units = %q; want 30", got)
+				}
+				return
+			}
+			if got := rec.Header().Get(workUnitsTrailer); got != "" {
+				t.Fatalf("unweighted non-streaming response gained work-units header %q", got)
+			}
+			if rec.Body.String() != responseBody {
+				t.Fatalf("unweighted non-streaming body changed:\n got: %q\nwant: %q", rec.Body.String(), responseBody)
 			}
 		})
 	}

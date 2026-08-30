@@ -260,9 +260,9 @@ func writeStreamingResponseWeighted(w http.ResponseWriter, resp *http.Response, 
 	w.Header().Set(workUnitsTrailer, fmt.Sprintf("%d", total))
 }
 
-// writePassThroughResponse copies a non-streaming response (or an
-// unexpected non-SSE response) to the client. Token counting is left
-// to the broker's openai-usage extractor reading the body.
+// writePassThroughResponse copies a non-streaming response (or an unexpected
+// non-SSE response) to the client. For an unweighted model, token counting is
+// left to the broker's openai-usage extractor reading the body.
 func writePassThroughResponse(w http.ResponseWriter, resp *http.Response) {
 	copyAllHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -292,15 +292,15 @@ func writePassThroughResponseWeighted(w http.ResponseWriter, resp *http.Response
 		writeRunnerError(w, http.StatusBadGateway, "upstream response failed")
 		return
 	}
-	rewritten, err := rewriteUsageWorkUnits(body, usageField, model, weights)
+	units, err := extractWorkUnits(body, usageField, model, weights)
 	if err != nil {
 		writeRunnerError(w, http.StatusBadGateway, "upstream response contained invalid usage")
 		return
 	}
 	copyAllHeaders(w.Header(), resp.Header)
-	w.Header().Del("Content-Length")
+	w.Header().Set(workUnitsTrailer, fmt.Sprintf("%d", units))
 	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(rewritten)
+	_, _ = w.Write(body)
 }
 
 func requestModel(body []byte) (string, error) {
@@ -313,35 +313,20 @@ func requestModel(body []byte) (string, error) {
 	return request.Model, nil
 }
 
-func rewriteUsageWorkUnits(body []byte, usageField, model string, weights map[string]uint64) ([]byte, error) {
-	var doc map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	if err := decoder.Decode(&doc); err != nil {
-		return nil, err
+func extractWorkUnits(body []byte, usageField, model string, weights map[string]uint64) (uint64, error) {
+	var envelope usageEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return 0, err
 	}
-	rawUsage, ok := doc["usage"]
-	if !ok {
-		return nil, fmt.Errorf("missing usage")
+	if envelope.Usage == nil {
+		return 0, fmt.Errorf("missing usage")
 	}
-	encodedUsage, err := json.Marshal(rawUsage)
-	if err != nil {
-		return nil, err
-	}
-	var usage usageFields
-	if err := json.Unmarshal(encodedUsage, &usage); err != nil {
-		return nil, err
-	}
+	usage := *envelope.Usage
 	units, representable := calculateWorkUnits(usage, usageField, model, weights)
 	if !representable {
-		return nil, fmt.Errorf("weighted usage overflows uint64")
+		return 0, fmt.Errorf("weighted usage overflows uint64")
 	}
-	usageMap, ok := rawUsage.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("usage is not an object")
-	}
-	usageMap["total_tokens"] = units
-	return json.Marshal(doc)
+	return units, nil
 }
 
 func isRefundableUpstreamStatus(status int) bool {
