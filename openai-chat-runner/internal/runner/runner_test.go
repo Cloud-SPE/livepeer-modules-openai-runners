@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -177,6 +178,13 @@ func TestHandler_RejectsDisallowedModelBeforeProxying(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || called {
 		t.Fatalf("status = %d, upstream called = %v; want 400, false", rec.Code, called)
+	}
+	if got := rec.Header().Get(runnerErrorHeader); got != "" {
+		t.Fatalf("runner error header = %q; policy rejection is not an upstream failure", got)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, `model \"other\" is not allowed`) ||
+		!strings.Contains(got, `"type":"invalid_request_error"`) {
+		t.Fatalf("unexpected policy error body: %s", got)
 	}
 }
 
@@ -376,18 +384,35 @@ func TestDiscoverModelsWithConfigFiltersAndAuthenticates(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer operator-key" {
 			t.Errorf("Authorization = %q", got)
 		}
-		_, _ = io.WriteString(w, `{"data":[{"id":"first"},{"id":"allowed"},{"id":"last"}]}`)
+		_, _ = io.WriteString(w, `{"data":[{"id":"first"},{"id":"model-b"},{"id":"last"},{"id":"model-a"}]}`)
 	}))
 	t.Cleanup(server.Close)
 	ids, err := discoverModelsWithConfig(http.DefaultClient, server.URL, config{
 		upstreamAPIKey: "operator-key",
-		modelAllowlist: map[string]struct{}{"allowed": {}},
+		modelAllowlist: modelAllowlist{"model-a": {}, "model-b": {}, "not-discovered": {}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 1 || ids[0] != "allowed" {
-		t.Fatalf("models = %v; want [allowed]", ids)
+	want := []string{"model-b", "model-a"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("models = %v; want %v", ids, want)
+	}
+}
+
+func TestDiscoverModelsWithUnsetAllowlistPreservesUpstreamModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[{"id":"second"},{"id":"first"}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	ids, err := discoverModelsWithConfig(http.DefaultClient, server.URL, config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"second", "first"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("models = %v; want %v", ids, want)
 	}
 }
 

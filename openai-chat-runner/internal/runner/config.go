@@ -11,6 +11,8 @@ import (
 
 type upstreamKind string
 
+type modelAllowlist map[string]struct{}
+
 const (
 	upstreamVLLM      upstreamKind = "vllm"
 	upstreamOpenAI    upstreamKind = "openai"
@@ -27,7 +29,7 @@ type config struct {
 	upstreamAPIKey   string
 	capability       string
 	usageField       string
-	modelAllowlist   map[string]struct{}
+	modelAllowlist   modelAllowlist
 	outputWeights    map[string]uint64
 	maxBodyBytes     int64
 	discoveryRetries int
@@ -71,17 +73,17 @@ func configFromEnv() (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("OUTPUT_TOKEN_WEIGHT: %w", err)
 	}
-	if cfg.options.servedModelName != "" && !cfg.modelAllowed(cfg.options.servedModelName) {
+	if cfg.options.servedModelName != "" && !cfg.modelAllowlist.allows(cfg.options.servedModelName) {
 		return config{}, fmt.Errorf("SERVED_MODEL_NAME %q is not present in MODEL_ALLOWLIST", cfg.options.servedModelName)
 	}
 	return cfg, nil
 }
 
-func parseModelAllowlist(raw string) (map[string]struct{}, error) {
+func parseModelAllowlist(raw string) (modelAllowlist, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}
-	models := make(map[string]struct{})
+	models := make(modelAllowlist)
 	for _, item := range strings.Split(raw, ",") {
 		model := strings.TrimSpace(item)
 		if model == "" {
@@ -125,12 +127,28 @@ func parseOutputTokenWeights(raw string) (map[string]uint64, error) {
 	return weights, nil
 }
 
-func (c config) modelAllowed(model string) bool {
-	if len(c.modelAllowlist) == 0 {
+func (a modelAllowlist) allows(model string) bool {
+	if len(a) == 0 {
 		return true
 	}
-	_, ok := c.modelAllowlist[model]
+	_, ok := a[model]
 	return ok
+}
+
+// filter returns the discovered models that satisfy the policy, retaining
+// upstream ordering. An unset policy returns the original slice so discovery
+// and options preserve their existing behavior exactly.
+func (a modelAllowlist) filter(discovered []string) []string {
+	if len(a) == 0 {
+		return discovered
+	}
+	filtered := make([]string, 0, len(discovered))
+	for _, model := range discovered {
+		if a.allows(model) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
 }
 
 func calculateWorkUnits(usage usageFields, usageField string, model string, weights map[string]uint64) (uint64, bool) {

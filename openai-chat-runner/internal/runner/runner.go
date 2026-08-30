@@ -82,13 +82,7 @@ func Run() {
 	})
 
 	mux.HandleFunc("/"+cfg.capability+"/options", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		models, _ := loadModels(&discoveredModels)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(buildOptionsPayload(models, cfg.options))
+		handleOptions(w, r, cfg, &discoveredModels)
 	})
 
 	slog.Info("openai-chat-runner listening", "addr", cfg.addr, "capability", cfg.capability,
@@ -150,7 +144,7 @@ func handleChatCompletionsWithConfig(w http.ResponseWriter, r *http.Request, cli
 		writeOpenAIError(w, http.StatusBadRequest, "request body is not valid JSON", "invalid_request_error")
 		return
 	}
-	if !cfg.modelAllowed(model) {
+	if !cfg.modelAllowlist.allows(model) {
 		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("model %q is not allowed", model), "invalid_request_error")
 		return
 	}
@@ -448,6 +442,17 @@ func buildOptionsPayload(models []string, cfg optionsConfig) map[string]any {
 	return out
 }
 
+func handleOptions(w http.ResponseWriter, r *http.Request, cfg config, discoveredModels *atomic.Value) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	models, _ := loadModels(discoveredModels)
+	models = cfg.modelAllowlist.filter(models)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(buildOptionsPayload(models, cfg.options))
+}
+
 type livepeerHeader struct {
 	Request        string `json:"request"`
 	Capability     string `json:"capability"`
@@ -545,10 +550,9 @@ func discoverModelsWithConfig(client *http.Client, base string, cfg config) ([]s
 	}
 	ids := make([]string, 0, len(result.Data))
 	for _, m := range result.Data {
-		if cfg.modelAllowed(m.ID) {
-			ids = append(ids, m.ID)
-		}
+		ids = append(ids, m.ID)
 	}
+	ids = cfg.modelAllowlist.filter(ids)
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("no upstream models matched MODEL_ALLOWLIST")
 	}

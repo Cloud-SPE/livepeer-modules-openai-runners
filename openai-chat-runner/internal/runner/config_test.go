@@ -42,14 +42,20 @@ func TestParseModelAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]struct{}{"model-a": {}, "model-b": {}}
+	want := modelAllowlist{"model-a": {}, "model-b": {}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("allowlist = %#v; want %#v", got, want)
 	}
-	for _, raw := range []string{"model-a,", "model-a, model-a"} {
-		if _, err := parseModelAllowlist(raw); err == nil {
-			t.Errorf("parseModelAllowlist(%q) should fail", raw)
+	for _, raw := range []string{"", "   "} {
+		if got, err := parseModelAllowlist(raw); err != nil || got != nil {
+			t.Errorf("parseModelAllowlist(%q) = %#v, %v; want nil, nil", raw, got, err)
 		}
+	}
+	if _, err := parseModelAllowlist("model-a,"); err == nil || !strings.Contains(err.Error(), "empty model ID") {
+		t.Fatalf("empty entry error = %v", err)
+	}
+	if _, err := parseModelAllowlist("model-a, model-a"); err == nil || err.Error() != `duplicate model ID "model-a"` {
+		t.Fatalf("duplicate error = %v", err)
 	}
 }
 

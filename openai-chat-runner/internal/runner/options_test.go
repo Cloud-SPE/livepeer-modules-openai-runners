@@ -1,7 +1,11 @@
 package runner
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"sync/atomic"
 	"testing"
 )
 
@@ -105,5 +109,50 @@ func TestBuildOptionsPayload_OmitsUpstreamKindWhenEmpty(t *testing.T) {
 	out := buildOptionsPayload([]string{"m"}, optionsConfig{})
 	if _, present := out["upstream_kind"]; present {
 		t.Fatal("upstream_kind should be omitted when unset")
+	}
+}
+
+func TestHandleOptionsAppliesModelAllowlist(t *testing.T) {
+	tests := []struct {
+		name      string
+		allowlist modelAllowlist
+		want      []string
+	}{
+		{
+			name:      "configured filters without inventing missing models",
+			allowlist: modelAllowlist{"model-a": {}, "model-b": {}, "not-discovered": {}},
+			want:      []string{"model-b", "model-a"},
+		},
+		{
+			name: "unset preserves discovered models",
+			want: []string{"first", "model-b", "disallowed", "model-a"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			models := atomic.Value{}
+			models.Store([]string{"first", "model-b", "disallowed", "model-a"})
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/openai-chat-completions/options", nil)
+			handleOptions(rec, req, config{modelAllowlist: tt.allowlist}, &models)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d; want 200", rec.Code)
+			}
+			var payload struct {
+				Models          []string `json:"models"`
+				ServedModelName string   `json:"served_model_name"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(payload.Models, tt.want) {
+				t.Fatalf("models = %v; want %v", payload.Models, tt.want)
+			}
+			if payload.ServedModelName != tt.want[0] {
+				t.Fatalf("served_model_name = %q; want %q", payload.ServedModelName, tt.want[0])
+			}
+		})
 	}
 }
