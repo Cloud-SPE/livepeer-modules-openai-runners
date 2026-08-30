@@ -111,6 +111,15 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 }
 
 func handleChatCompletionsWithConfig(w http.ResponseWriter, r *http.Request, client *http.Client, cfg config, discoveredModels *atomic.Value) {
+	started := time.Now()
+	observed := &statusResponseWriter{ResponseWriter: w}
+	w = observed
+	defer func() {
+		slog.Info("request completed", "method", r.Method, "path", r.URL.Path,
+			"upstream_kind", cfg.upstreamKind, "status", observed.statusCode(),
+			"duration_seconds", time.Since(started).Seconds())
+	}()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -153,7 +162,7 @@ func handleChatCompletionsWithConfig(w http.ResponseWriter, r *http.Request, cli
 	}
 	bodyBytes = rewritten
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.upstreamURL, bytes.NewReader(bodyBytes))
+	req, err := newUpstreamRequest(ctx, http.MethodPost, cfg.upstreamURL, bytes.NewReader(bodyBytes), cfg)
 	if err != nil {
 		http.Error(w, "failed to create upstream request", http.StatusBadGateway)
 		return
@@ -161,10 +170,6 @@ func handleChatCompletionsWithConfig(w http.ResponseWriter, r *http.Request, cli
 	req.ContentLength = int64(len(bodyBytes))
 	copyHeader(req.Header, r.Header, []string{"Content-Type", "Accept"})
 	req.Header.Del("Livepeer")
-	req.Header.Del("Authorization")
-	if cfg.upstreamAPIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.upstreamAPIKey)
-	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -190,6 +195,44 @@ func handleChatCompletionsWithConfig(w http.ResponseWriter, r *http.Request, cli
 		return
 	}
 	writePassThroughResponseWeighted(w, resp, cfg.usageField, model, cfg.outputWeights)
+}
+
+// statusResponseWriter records the broker-facing status for the structured
+// request log while retaining streaming flush support.
+type statusResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *statusResponseWriter) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *statusResponseWriter) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
 }
 
 // writeStreamingResponse forwards an SSE response while counting
@@ -477,8 +520,12 @@ func discoverModelsWithRetryConfig(client *http.Client, base string, cfg config,
 		if err == nil {
 			return ids, nil
 		}
-		slog.Warn("model discovery failed", "upstream_kind", cfg.upstreamKind,
-			"attempt", i+1, "attempts", retries, "error", err)
+		attrs := []any{"upstream_kind", cfg.upstreamKind, "attempt", i + 1, "attempts", retries}
+		var upstreamErr *upstreamRequestError
+		if errors.As(err, &upstreamErr) {
+			attrs = append(attrs, "status", upstreamErr.status, "vendor_request_id", upstreamErr.vendorRequestID)
+		}
+		slog.Warn("model discovery failed", attrs...)
 	}
 	return nil, fmt.Errorf("model discovery failed after %d attempts", retries)
 }
@@ -488,12 +535,9 @@ func discoverModels(base string) ([]string, error) {
 }
 
 func discoverModelsWithConfig(client *http.Client, base string, cfg config) ([]string, error) {
-	req, err := http.NewRequest(http.MethodGet, base+"/v1/models", nil)
+	req, err := newUpstreamRequest(context.Background(), http.MethodGet, base+"/v1/models", nil, cfg)
 	if err != nil {
 		return nil, err
-	}
-	if cfg.upstreamAPIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.upstreamAPIKey)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -501,7 +545,7 @@ func discoverModelsWithConfig(client *http.Client, base string, cfg config) ([]s
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d from /v1/models", resp.StatusCode)
+		return nil, &upstreamRequestError{status: resp.StatusCode, vendorRequestID: vendorRequestID(resp.Header)}
 	}
 	var result struct {
 		Data []struct {
@@ -524,6 +568,31 @@ func discoverModelsWithConfig(client *http.Client, base string, cfg config) ([]s
 		return nil, fmt.Errorf("no upstream models matched MODEL_ALLOWLIST")
 	}
 	return ids, nil
+}
+
+// upstreamRequestError carries only the bounded metadata safe to expose in
+// logs. It intentionally cannot retain an upstream body or authorization.
+type upstreamRequestError struct {
+	status          int
+	vendorRequestID string
+}
+
+func (e *upstreamRequestError) Error() string {
+	return fmt.Sprintf("unexpected upstream status %d", e.status)
+}
+
+// newUpstreamRequest is the single construction path for discovery and chat
+// requests. Only the startup-loaded operator credential can become outbound
+// Authorization; inbound credentials are never passed to this function.
+func newUpstreamRequest(ctx context.Context, method, target string, body io.Reader, cfg config) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, target, body)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.upstreamAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.upstreamAPIKey)
+	}
+	return req, nil
 }
 
 func env(k, def string) string {

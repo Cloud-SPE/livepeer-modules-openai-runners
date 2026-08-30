@@ -3,8 +3,39 @@ package runner
 import (
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestConfigFromEnvVendorDefaults(t *testing.T) {
+	for _, name := range []string{"UPSTREAM_KIND", "UPSTREAM_API_KEY", "MODEL_ALLOWLIST", "OUTPUT_TOKEN_WEIGHT"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("UPSTREAM_URL", "http://upstream.test/v1/chat/completions")
+
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.upstreamKind != upstreamVLLM || cfg.upstreamAPIKey != "" || cfg.modelAllowlist != nil || cfg.outputWeights != nil {
+		t.Fatalf("unexpected unset defaults: kind=%q key=%q allowlist=%v weights=%v",
+			cfg.upstreamKind, cfg.upstreamAPIKey, cfg.modelAllowlist, cfg.outputWeights)
+	}
+}
+
+func TestConfigFromEnvRejectsInvalidUpstreamKindAndURL(t *testing.T) {
+	t.Setenv("UPSTREAM_URL", "http://upstream.test/v1/chat/completions")
+	t.Setenv("UPSTREAM_KIND", "ollama")
+	if _, err := configFromEnv(); err == nil || !strings.Contains(err.Error(), "UPSTREAM_KIND") {
+		t.Fatalf("invalid kind error = %v", err)
+	}
+
+	t.Setenv("UPSTREAM_KIND", "vllm")
+	t.Setenv("UPSTREAM_URL", "://bad")
+	if _, err := configFromEnv(); err == nil || !strings.Contains(err.Error(), "UPSTREAM_URL") {
+		t.Fatalf("invalid URL error = %v", err)
+	}
+}
 
 func TestParseModelAllowlist(t *testing.T) {
 	got, err := parseModelAllowlist(" model-b,model-a ")

@@ -3,7 +3,10 @@ package runner
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,6 +131,39 @@ func TestHandler_SetsOnlyOperatorAuthorization(t *testing.T) {
 	}
 }
 
+func TestOutboundRequestsHaveNoAuthorizationByDefault(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q; want absent", got)
+		}
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = io.WriteString(w, `{"data":[{"id":"allowed"}]}`)
+		case defaultEndpoint:
+			_, _ = io.WriteString(w, `{"usage":{"total_tokens":1}}`)
+		default:
+			t.Errorf("unexpected upstream path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	if _, err := discoverModelsWithConfig(http.DefaultClient, upstream.URL, config{}); err != nil {
+		t.Fatal(err)
+	}
+	handler := newConfiguredRunner(t, upstream.URL+defaultEndpoint, func(cfg *config) {
+		cfg.upstreamKind = upstreamVLLM
+	})
+	req := httptest.NewRequest(http.MethodPost, defaultEndpoint, strings.NewReader(`{"model":"allowed"}`))
+	req.Header.Set("Authorization", "Bearer inbound-customer-secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || calls.Load() != 2 {
+		t.Fatalf("status=%d calls=%d; want 200 and 2", rec.Code, calls.Load())
+	}
+}
+
 func TestHandler_RejectsDisallowedModelBeforeProxying(t *testing.T) {
 	called := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { called = true }))
@@ -161,6 +197,97 @@ func TestHandler_VendorFailureIsSanitizedAndRefundable(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "secret_vendor_body") {
 		t.Fatalf("vendor body leaked: %s", rec.Body.String())
+	}
+}
+
+func TestHandler_RefundableFailuresLogOnlySanitizedMetadata(t *testing.T) {
+	const (
+		apiKey      = "operator-secret-key"
+		vendorBody  = "highly-sensitive-vendor-body"
+		vendorReqID = "vendor-request-123"
+	)
+	for _, status := range []int{
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("Authorization"); got != "Bearer "+apiKey {
+					t.Errorf("Authorization = %q", got)
+				}
+				w.Header().Set("X-Request-ID", vendorReqID)
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, vendorBody)
+			}))
+			t.Cleanup(upstream.Close)
+			handler := newConfiguredRunner(t, upstream.URL, func(cfg *config) {
+				cfg.upstreamKind = upstreamDashScope
+				cfg.upstreamAPIKey = apiKey
+			})
+			req := httptest.NewRequest(http.MethodPost, defaultEndpoint, strings.NewReader(`{"model":"allowed"}`))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != status || rec.Header().Get(runnerErrorHeader) != "true" {
+				t.Fatalf("status=%d runner-error=%q; want %d,true", rec.Code, rec.Header().Get(runnerErrorHeader), status)
+			}
+			combined := logs.String() + rec.Body.String()
+			if strings.Contains(combined, apiKey) || strings.Contains(combined, vendorBody) {
+				t.Fatalf("secret or vendor body leaked: %s", combined)
+			}
+			if !strings.Contains(logs.String(), vendorReqID) ||
+				!strings.Contains(logs.String(), `"upstream_kind":"dashscope"`) ||
+				!strings.Contains(logs.String(), fmt.Sprintf(`"status":%d`, status)) {
+				t.Fatalf("sanitized metadata missing from logs: %s", logs.String())
+			}
+		})
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestHandler_TransportFailureIsSanitizedAndRefundable(t *testing.T) {
+	const apiKey = "transport-secret-key"
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+apiKey {
+			t.Errorf("Authorization = %q", got)
+		}
+		return nil, errors.New("dial failed without response body")
+	})}
+	models := atomic.Value{}
+	models.Store([]string{"allowed"})
+	cfg := config{
+		upstreamURL: "http://upstream.invalid/v1/chat/completions", upstreamKind: upstreamOpenAI,
+		upstreamAPIKey: apiKey, maxBodyBytes: defaultMaxBodyBytes, usageField: "total_tokens",
+	}
+	req := httptest.NewRequest(http.MethodPost, defaultEndpoint, strings.NewReader(`{"model":"allowed"}`))
+	rec := httptest.NewRecorder()
+	handleChatCompletionsWithConfig(rec, req, client, cfg, &models)
+
+	if rec.Code != http.StatusBadGateway || rec.Header().Get(runnerErrorHeader) != "true" {
+		t.Fatalf("status=%d runner-error=%q; want 502,true", rec.Code, rec.Header().Get(runnerErrorHeader))
+	}
+	combined := logs.String() + rec.Body.String()
+	if strings.Contains(combined, apiKey) || strings.Contains(combined, "dial failed") {
+		t.Fatalf("transport detail or secret leaked: %s", combined)
+	}
+	if !strings.Contains(logs.String(), `"status":502`) || !strings.Contains(logs.String(), `"upstream_kind":"openai"`) {
+		t.Fatalf("status or upstream kind missing from logs: %s", logs.String())
 	}
 }
 
@@ -224,5 +351,42 @@ func TestDiscoverModelsWithConfigFiltersAndAuthenticates(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != "allowed" {
 		t.Fatalf("models = %v; want [allowed]", ids)
+	}
+}
+
+func TestDiscoveryFailureLogsStatusAndRequestIDWithoutBodyOrSecret(t *testing.T) {
+	const (
+		apiKey      = "discovery-operator-secret"
+		vendorBody  = "discovery-private-body"
+		vendorReqID = "discovery-request-456"
+	)
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+apiKey {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.Header().Set("X-Dashscope-Request-ID", vendorReqID)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, vendorBody)
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := discoverModelsWithRetryConfig(http.DefaultClient, server.URL, config{
+		upstreamKind: upstreamDashScope, upstreamAPIKey: apiKey,
+	}, 1, 0)
+	if err == nil {
+		t.Fatal("discovery should fail")
+	}
+	if strings.Contains(logs.String(), apiKey) || strings.Contains(logs.String(), vendorBody) {
+		t.Fatalf("discovery secret or body leaked: %s", logs.String())
+	}
+	for _, want := range []string{vendorReqID, `"status":401`, `"upstream_kind":"dashscope"`} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("log missing %q: %s", want, logs.String())
+		}
 	}
 }

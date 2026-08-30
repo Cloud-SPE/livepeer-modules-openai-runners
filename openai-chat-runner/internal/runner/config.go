@@ -3,6 +3,7 @@ package runner
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -46,6 +47,10 @@ func configFromEnv() (config, error) {
 	}
 	if cfg.upstreamURL == "" {
 		return config{}, fmt.Errorf("UPSTREAM_URL is required, e.g. http://HOST:PORT%s", defaultEndpoint)
+	}
+	parsedUpstream, parseErr := url.ParseRequestURI(cfg.upstreamURL)
+	if parseErr != nil || (parsedUpstream.Scheme != "http" && parsedUpstream.Scheme != "https") || parsedUpstream.Host == "" {
+		return config{}, fmt.Errorf("UPSTREAM_URL must be an absolute http or https URL")
 	}
 
 	kind := strings.TrimSpace(env("UPSTREAM_KIND", string(upstreamVLLM)))
