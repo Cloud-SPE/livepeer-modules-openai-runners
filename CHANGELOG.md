@@ -7,7 +7,8 @@ All notable changes to this repo. Format roughly follows [Keep a Changelog](http
 - **Phase 0 vendor pass-through**: `openai-chat-runner` now supports bounded
   OpenAI and DashScope upstream kinds, operator-supplied outbound bearer auth,
   exact model allowlisting, checked per-model output-token weighting, sanitized
-  refundable vendor failures, and dedicated vendor compose overlays.
+  refundable vendor failures, dedicated vendor compose overlays, and a
+  deterministic authenticated vendor integration fixture in `openai-tester`.
 
 ## [v1.3.0] — 2026-05-19
 

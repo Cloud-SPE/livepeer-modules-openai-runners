@@ -573,7 +573,10 @@ Same shape as `image-model-downloader` but for the rerank model. Defaults to
 ## openai-tester
 
 Node.js integration test harness that exercises every runner through the
-OpenAI SDK. One test script per capability.
+OpenAI SDK. One test script per capability. It also contains the deterministic
+authenticated `mockvendor` Go package used by the chat runner integration test;
+the fixture implements model discovery and streaming/non-streaming chat without
+contacting an external vendor.
 
 ### Test scripts
 
@@ -587,6 +590,7 @@ OpenAI SDK. One test script per capability.
 | `test-audio-translation.mjs` | `openai-audio-translations` |
 | `test-audio-speech.mjs` | `openai-audio-speech` |
 | `test-image-generation.mjs` | `image-generation` |
+| `mockvendor/` | Authenticated OpenAI-compatible fixture for Go integration tests |
 
 ### Configuration
 
