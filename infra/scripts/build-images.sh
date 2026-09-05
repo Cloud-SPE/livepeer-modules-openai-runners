@@ -234,15 +234,17 @@ done
 ok "all $total image(s) built (registry=${REGISTRY} tag=${TAG} version=${VERSION})"
 
 if [[ "$PUSH" == "1" && ${#PUSHED_DIGESTS[@]} -gt 0 ]]; then
+  pushed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  digest_file_rel="${DIGEST_FILE#"$ROOT"/}"
   {
-    echo "# ${TAG} — pushed $(date -u +%Y-%m-%dT%H:%M:%SZ) from ${VERSION}"
+    echo "# ${TAG} - pushed ${pushed_at} from ${VERSION}"
     for entry in "${PUSHED_DIGESTS[@]}"; do
       printf '%-32s %s\n' "${entry%%|*}" "${entry#*|}"
     done
   } >> "$DIGEST_FILE"
   echo
-  echo "Pin these digests in the deployment — a tag can be moved, a digest cannot"
-  echo "(also appended to ${DIGEST_FILE#"$ROOT"/}; check it in with the release):"
+  echo "Pin these digests in the deployment - a tag can be moved, a digest cannot."
+  echo "Also appended to ${digest_file_rel}; check it in with the release:"
   for entry in "${PUSHED_DIGESTS[@]}"; do
     printf '  %-32s %s\n' "${entry%%|*}" "${entry#*|}"
   done
