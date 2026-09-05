@@ -13,7 +13,9 @@
 //     because the body is non-streaming).
 //   - Forwards the response body to the client byte-for-byte.
 //
-// The broker reads the header via its `response-header` extractor.
+// The contract served at /.well-known/livepeer-runner declares the
+// `openai-usage` extractor, so the broker bills from the body; the
+// header is the runner's own claim and stays informational.
 //
 // Both vLLM-in-embed-mode and Ollama emit usage in the OpenAI-shaped
 // embeddings response body, so a single code path covers both
@@ -40,7 +42,7 @@ import (
 
 const (
 	defaultEndpoint     = "/v1/embeddings"
-	defaultCapability   = "openai-text-embeddings"
+	defaultCapability   = "openai:embeddings"
 	defaultMaxBodyBytes = int64(1 << 20)
 	workUnitsHeader     = "X-Livepeer-Work-Units"
 )
@@ -56,8 +58,8 @@ func Run() {
 	usageField := env("USAGE_FIELD", "total_tokens")
 	upstreamKind := env("UPSTREAM_KIND", "vllm")
 	maxBodyBytes := defaultMaxBodyBytes
-	optionsCfg := optionsConfigFromEnv()
-	optionsCfg.upstreamKind = upstreamKind
+	contractCfg := contractConfigFromEnv()
+	contractCfg.upstreamKind = upstreamKind
 
 	client := &http.Client{Transport: newTransport()}
 
@@ -88,14 +90,12 @@ func Run() {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "models": models})
 	})
 
-	mux.HandleFunc("/"+capability+"/options", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		models, _ := loadModels(&discoveredModels)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(buildOptionsPayload(models, optionsCfg))
+	mux.HandleFunc(contractPath, func(w http.ResponseWriter, r *http.Request) {
+		handleContract(w, r, capability, usageField, contractCfg, &discoveredModels)
+	})
+
+	mux.HandleFunc(modelsPath, func(w http.ResponseWriter, r *http.Request) {
+		handleModels(w, r, contractCfg, &discoveredModels)
 	})
 
 	log.Printf("openai-embeddings-runner listening on %s capability=%s upstream=%s upstream_kind=%s usage_field=%s",
