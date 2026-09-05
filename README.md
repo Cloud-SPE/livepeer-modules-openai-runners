@@ -104,12 +104,13 @@ not the tag.
 
 The four CUDA runners' default images install PyTorch from the cu128 wheel
 index, which carries sm_75+ kernels only. For Pascal cards (sm_6x, e.g. a
-GTX 1080) build the `-pascal` flavor:
+GTX 1080) build the `-pascal` flavor of the audio, TTS and rerank runners.
+There is no image-generation variant: FLUX.1-dev does not fit an 8 GB card
+whatever the CUDA base, and the catalog does not admit it.
 
 ```bash
 TAG=v2.0.0-pascal PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu126 \
-  ./infra/scripts/build-images.sh openai-audio-runner openai-tts-runner \
-  openai-image-generation-runner rerank-runner
+  ./infra/scripts/build-images.sh openai-audio-runner openai-tts-runner rerank-runner
 ```
 
 The release workflow publishes both flavors.

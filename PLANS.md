@@ -26,8 +26,10 @@ or move to [`CHANGELOG.md`](./CHANGELOG.md).
   flavors floating independently the Pascal build can drift from the default
   one. Pin per flavor.
 - **Validate the `-pascal` flavor on real sm_61 hardware.** Built by the
-  release workflow from cu126 wheels (which carry sm_60 kernels) but never
-  run on a GTX 1080. The GPU probe's architecture check is the only guard.
+  release workflow from cu126 wheels (which carry sm_60 kernels) for audio,
+  TTS and rerank, but never run on a GTX 1080. The GPU probe's architecture
+  check is the only guard. The catalog selects it via the `nvidia/gtx-1080`
+  image-map key (network-modules ac786ca).
 - **End-to-end attach + certification.** Point a real pool member agent
   (`livepeer-network-modules` ≥ 3686b67) at each image, confirm the exception
   queue is empty and the offer freezes with the identity the contract

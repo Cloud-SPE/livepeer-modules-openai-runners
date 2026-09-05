@@ -43,13 +43,15 @@ jobs:
 
       # Pascal flavor: the default cu128 torch wheels carry sm_75+ kernels
       # only, so a GTX 1080 (sm_61) needs the cu126 wheels. Same Dockerfiles,
-      # different wheel index, `-pascal` tag suffix.
+      # different wheel index, `-pascal` tag suffix. No image-generation
+      # variant: FLUX.1-dev cannot fit an 8 GB card whatever the CUDA base,
+      # and the catalog will not admit it (network-modules, 2026-09-05).
       - name: Build and push the CUDA runners at ${{ env.TAG }}-pascal (cu126 wheels)
         env:
           PUSH: "1"
           TAG: ${{ env.TAG }}-pascal
           PYTORCH_INDEX_URL: https://download.pytorch.org/whl/cu126
-        run: ./infra/scripts/build-images.sh openai-audio-runner openai-tts-runner openai-image-generation-runner rerank-runner
+        run: ./infra/scripts/build-images.sh openai-audio-runner openai-tts-runner rerank-runner
 
       - name: Collect digest records
         run: |

@@ -23,7 +23,8 @@
 #   PYTORCH_INDEX_URL  PyTorch wheel index for the CUDA runners. Default cu128
 #                      (sm_75+). For a GTX 1080-class card build the -pascal flavor:
 #                        TAG=v2.0.0-pascal PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu126 \
-#                          ./infra/scripts/build-images.sh audio tts image-generation rerank-runner
+#                          ./infra/scripts/build-images.sh audio tts rerank-runner
+#                      (no image-generation variant: FLUX does not fit an 8 GB card)
 #   GO_VERSION, NODE_VERSION, PYTHON_VERSION, ALPINE_VERSION, UBUNTU_VERSION,
 #   CUDA_VERSION       toolchain pins, from infra/build/image-versions.env.
 #

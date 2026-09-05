@@ -423,10 +423,11 @@ the request's `n` (default 1); the broker counts, the runner does not.
 NVIDIA GPU with Ada or Blackwell architecture recommended (RTX 4090 / 5090).
 Driver: NVIDIA 545+. The runtime image is on a CUDA 13 base.
 
-The default image installs PyTorch from the cu128 wheel index, which carries
-kernels for sm_75 (Turing) and newer only: a Pascal card such as a GTX 1080
-(sm_61) fails the startup GPU probe with a message naming the fix. Use the
-`-pascal` image flavor (`v2.0.0-pascal`, cu126 wheels) for sm_6x cards.
+The image installs PyTorch from the cu128 wheel index, which carries kernels
+for sm_75 (Turing) and newer only; a Pascal card fails the startup GPU probe.
+Unlike the other CUDA runners there is no `-pascal` flavor of this image:
+FLUX.1-dev does not fit an 8 GB card whatever the CUDA base, and the catalog
+does not admit Pascal for image generation.
 
 VRAM by model:
 

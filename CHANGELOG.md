@@ -40,8 +40,10 @@ read the audio runner's two-entry contract.
 - **GPU probe checks the architecture.** Python runners exit non-zero at
   startup when the device's compute capability is not in the torch build's
   arch list, naming the fix. The default cu128 wheels ship sm_75+ only;
-  a **`-pascal` image flavor** (cu126 wheels, `v2.0.0-pascal`) covers
-  sm_6x cards such as the GTX 1080 and is published by the release workflow.
+  a **`-pascal` image flavor** (cu126 wheels, `v2.0.0-pascal`) of the
+  audio, TTS and rerank runners covers sm_6x cards such as the GTX 1080 and
+  is published by the release workflow. No image-generation variant: FLUX
+  does not fit an 8 GB card and the catalog does not admit it.
 - **CI runs tests.** `./build-images.sh test` runs `go vet`/`go test` for
   both Go modules and Python `unittest` for the contract and GPU-probe
   modules, all in Docker; the build workflow gates on it.
