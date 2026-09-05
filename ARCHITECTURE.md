@@ -13,8 +13,8 @@ HTTP request and does the work.
 
 ```text
    capability-broker (orch host)
-       │ Livepeer-Mode dispatch
-       │ POST /v1/cap → forwards to a configured backend per host-config.yaml
+       │ dispatches paid jobs over the pool member agent's tunnel
+       │ to the paths each runner declared at GET /.well-known/livepeer-runner
        │
        ├──► /v1/chat/completions      → openai-chat-runner       → Ollama / vLLM upstream
        ├──► /v1/embeddings            → openai-embeddings-runner → Ollama / vLLM upstream
@@ -77,8 +77,11 @@ its runner's source directory in the same image without volume mounts.
 ## What's deliberately out of scope
 
 - **Customer auth, billing, payment validation.** Lives upstream of the broker.
-- **Capability registration.** The orch-coordinator scrapes
-  `GET /<capability>/options` from each running runner.
-- **Mode dispatch + extractor logic.** Lives in the capability broker.
+- **Capability registration.** The runner serves its contract at
+  `GET /.well-known/livepeer-runner`; the pool member agent relays it once
+  per attach; the broker validates it and freezes the offer from it. See
+  [`BROKER-CONTRACT.md`](./BROKER-CONTRACT.md).
+- **Work-unit counting.** The runner declares the extractor; the broker runs
+  it.
 - **Wire-protocol middleware.** Lives in the gateway tier upstream of the broker.
 - **Video / vtuber runners.** Sibling repos.

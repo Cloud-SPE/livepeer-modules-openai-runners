@@ -3,7 +3,7 @@
 
 ARG REGISTRY=tztcloud
 ARG LOCAL_REGISTRY=local
-ARG TAG=v1.3.0
+ARG TAG=v2.0.0
 ARG BASE_IMAGE=${LOCAL_REGISTRY}/cuda13-python-base:${TAG}
 ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 
@@ -33,6 +33,10 @@ RUN uv pip install --no-cache \
     && uv pip install --no-cache .
 
 FROM ${BASE_IMAGE} AS runtime
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 
 COPY --from=builder --chown=runner:runner /opt/venv /opt/venv
 COPY --chown=runner:runner infra/offerings/openai-image-generation-runner.yaml /etc/runner/offering.yaml
@@ -42,7 +46,7 @@ RUN mkdir -p /models /cache/triton /cache/inductor \
 
 VOLUME /models
 
-ENV CAPABILITY_NAME=image-generation \
+ENV CAPABILITY_NAME=openai:images-generations \
     MODEL_DIR=/models \
     RUNNER_PORT=8080 \
     DEVICE=cuda \

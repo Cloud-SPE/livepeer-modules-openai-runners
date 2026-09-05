@@ -9,9 +9,10 @@ from typing import Optional
 import numpy as np
 import torch
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from .contract import CONTRACT_PATH, DEFAULT_CAPABILITY, build_contract
 from .gpu_probe import fail_fast_if_cuda_requested_without_gpu
 from .kokoro_loader import KOKORO_SAMPLE_RATE, KokoroPipeline
 
@@ -25,9 +26,9 @@ MAX_INPUT_CHARS = int(os.environ.get("MAX_INPUT_CHARS", "4000"))
 DEFAULT_VOICE = os.environ.get("DEFAULT_VOICE", "af_bella")
 METRICS_ENABLED = os.environ.get("METRICS_ENABLED", "false").lower() in ("true", "1", "yes")
 
-CAPABILITY_NAME = os.environ.get("CAPABILITY_NAME", "openai-audio-speech")
-CAP_SPEECH = "openai-audio-speech"
-MODEL_ALIAS = "kokoro"
+CAPABILITY_NAME = os.environ.get("CAPABILITY_NAME", DEFAULT_CAPABILITY)
+MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "kokoro")
+PROVIDER = "kokoro"
 AVAILABLE_VOICES = [
     "af_bella",
     "am_michael",
@@ -64,6 +65,17 @@ FORMAT_TABLE = {
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("kokoro-runner")
+
+CONTRACT = build_contract(
+    CAPABILITY_NAME,
+    model_alias=MODEL_ALIAS,
+    model_id=MODEL_ID,
+    provider=PROVIDER,
+    output_formats=list(FORMAT_TABLE),
+    default_voice=DEFAULT_VOICE,
+    voices=AVAILABLE_VOICES,
+    voice_aliases=OPENAI_VOICE_MAP,
+)
 
 _kokoro = KokoroPipeline()
 _semaphore: Optional[asyncio.Semaphore] = None
@@ -205,20 +217,9 @@ async def healthz():
     return {"status": "ok", "model": MODEL_ID, "device": DEVICE}
 
 
-@app.get(f"/{CAP_SPEECH}/options")
-async def speech_options():
-    return {
-        "models": [MODEL_ALIAS],
-        "task": "speech",
-        "formats": {
-            "output": sorted(FORMAT_TABLE.keys()),
-        },
-        "default_voice": DEFAULT_VOICE,
-        "voices": {
-            "native": AVAILABLE_VOICES,
-            "aliases": OPENAI_VOICE_MAP,
-        },
-    }
+@app.get(CONTRACT_PATH)
+async def runner_contract():
+    return JSONResponse(CONTRACT)
 
 
 if METRICS_ENABLED:

@@ -7,12 +7,15 @@
 //     for a final `usage` block (emitted by vLLM when
 //     `stream_options.include_usage: true`), then declares
 //     `X-Livepeer-Work-Units` as an HTTP trailer and emits the token
-//     count after the body. The broker's response-trailer extractor
-//     reads this trailer.
+//     count after the body.
 //
 //   - Non-streaming requests: the runner passes the response through
-//     unchanged. The broker uses its usual openai-usage extractor to
-//     read `usage.total_tokens` from the JSON body.
+//     unchanged (a model with OUTPUT_TOKEN_WEIGHT gets the header).
+//
+// Either way the contract the runner serves at
+// /.well-known/livepeer-runner declares the `openai-usage` extractor, so
+// the broker bills from the usage block in the body (the final SSE usage
+// frame on streams); the trailer/header is the runner's own claim.
 //
 // Auto-injects `stream_options.include_usage: true` on streaming
 // requests when absent, so clients don't have to know about the
@@ -28,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -39,42 +43,43 @@ import (
 
 const (
 	defaultEndpoint     = "/v1/chat/completions"
-	defaultCapability   = "openai-chat-completions"
+	defaultCapability   = "openai:chat-completions"
 	defaultMaxBodyBytes = int64(5 << 20)
-	workUnitsTrailer    = "X-Livepeer-Work-Units"
+	// workUnitsHeader is the runner-side usage signal: an HTTP trailer on
+	// streams, a header on weighted unary responses. Informational — the
+	// contract declares openai-usage, which the broker reads from the body.
+	workUnitsHeader     = "X-Livepeer-Work-Units"
+	runnerErrorHeader   = "X-Livepeer-Runner-Error"
 )
+
+// Version is the build's version string, set by cmd/runner from the
+// linker-stamped value. Logged at startup so a container can say which
+// commit it is.
+var Version = "dev"
 
 // Run starts the runner with environment-driven config and blocks.
 func Run() {
-	addr := env("RUNNER_ADDR", ":8080")
-	upstream := env("UPSTREAM_URL", "")
-	if upstream == "" {
-		log.Fatalf("UPSTREAM_URL is required, e.g. http://HOST:PORT%s", defaultEndpoint)
+	cfg, err := configFromEnv()
+	if err != nil {
+		log.Fatalf("configuration error: %v", err)
 	}
-	capability := env("CAPABILITY_NAME", defaultCapability)
-	usageField := env("USAGE_FIELD", "total_tokens")
-	upstreamKind := env("UPSTREAM_KIND", "vllm")
-	maxBodyBytes := defaultMaxBodyBytes
-	optionsCfg := optionsConfigFromEnv()
-	optionsCfg.upstreamKind = upstreamKind
 
 	client := &http.Client{Transport: newTransport()}
 
 	var discoveredModels atomic.Value
 	go func() {
-		retries := envInt("MODEL_DISCOVERY_RETRIES", 10)
-		ids, err := discoverModelsWithRetry(upstreamBase(upstream), retries, 10*time.Second)
+		ids, err := discoverModelsWithRetryConfig(client, upstreamBase(cfg.upstreamURL), cfg, cfg.discoveryRetries, 10*time.Second)
 		if err != nil {
 			log.Fatalf("model discovery failed: %v", err)
 		}
 		discoveredModels.Store(ids)
-		log.Printf("discovered %d model(s): %v", len(ids), ids)
+		slog.Info("models discovered", "upstream_kind", cfg.upstreamKind, "count", len(ids))
 	}()
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc(defaultEndpoint, func(w http.ResponseWriter, r *http.Request) {
-		handleChatCompletions(w, r, client, upstream, maxBodyBytes, usageField, &discoveredModels)
+		handleChatCompletionsWithConfig(w, r, client, cfg, &discoveredModels)
 	})
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -87,27 +92,43 @@ func Run() {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "models": models})
 	})
 
-	mux.HandleFunc("/"+capability+"/options", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		models, _ := loadModels(&discoveredModels)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(buildOptionsPayload(models, optionsCfg))
+	mux.HandleFunc(contractPath, func(w http.ResponseWriter, r *http.Request) {
+		handleContract(w, r, cfg, &discoveredModels)
 	})
 
-	log.Printf("openai-chat-runner listening on %s capability=%s upstream=%s upstream_kind=%s usage_field=%s",
-		addr, capability, upstream, upstreamKind, usageField)
+	mux.HandleFunc(modelsPath, func(w http.ResponseWriter, r *http.Request) {
+		handleModels(w, r, cfg, &discoveredModels)
+	})
+
+	slog.Info("openai-chat-runner listening", "version", Version, "addr", cfg.addr, "capability", cfg.capability,
+		"upstream", cfg.upstreamURL, "upstream_kind", cfg.upstreamKind, "usage_field", cfg.usageField)
 	srv := &http.Server{
-		Addr:              addr,
+		Addr:              cfg.addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Fatal(srv.ListenAndServe())
 }
 
+// handleChatCompletions retains the original test-facing helper with the
+// legacy defaults. Production passes the startup-loaded typed configuration to
+// handleChatCompletionsWithConfig.
 func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.Client, upstream string, maxBodyBytes int64, usageField string, discoveredModels *atomic.Value) {
+	handleChatCompletionsWithConfig(w, r, client, config{
+		upstreamURL: upstream, upstreamKind: upstreamVLLM, maxBodyBytes: maxBodyBytes, usageField: usageField,
+	}, discoveredModels)
+}
+
+func handleChatCompletionsWithConfig(w http.ResponseWriter, r *http.Request, client *http.Client, cfg config, discoveredModels *atomic.Value) {
+	started := time.Now()
+	observed := &statusResponseWriter{ResponseWriter: w}
+	w = observed
+	defer func() {
+		slog.Info("request completed", "method", r.Method, "path", r.URL.Path,
+			"upstream_kind", cfg.upstreamKind, "status", observed.statusCode(),
+			"duration_seconds", time.Since(started).Seconds())
+	}()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -124,7 +145,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 		defer cancel()
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, cfg.maxBodyBytes))
 	if err != nil {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
@@ -133,6 +154,16 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 
 	// Auto-inject include_usage on streaming requests. Non-streaming
 	// requests pass through untouched.
+	model, err := requestModel(bodyBytes)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "request body is not valid JSON", "invalid_request_error")
+		return
+	}
+	if !cfg.modelAllowlist.allows(model) {
+		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("model %q is not allowed", model), "invalid_request_error")
+		return
+	}
+
 	rewritten, isStream, err := ensureIncludeUsage(bodyBytes)
 	if err != nil {
 		http.Error(w, "request body is not valid JSON", http.StatusBadRequest)
@@ -140,7 +171,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 	}
 	bodyBytes = rewritten
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream, bytes.NewReader(bodyBytes))
+	req, err := newUpstreamRequest(ctx, http.MethodPost, cfg.upstreamURL, bytes.NewReader(bodyBytes), cfg)
 	if err != nil {
 		http.Error(w, "failed to create upstream request", http.StatusBadGateway)
 		return
@@ -148,7 +179,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 	req.ContentLength = int64(len(bodyBytes))
 	copyHeader(req.Header, r.Header, []string{"Content-Type", "Accept"})
 	req.Header.Del("Livepeer")
-	req.Header.Del("Authorization")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -156,25 +186,75 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, client *http.
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
 			status = http.StatusGatewayTimeout
 		}
-		http.Error(w, "upstream request failed: "+err.Error(), status)
+		slog.Error("upstream request failed", "upstream_kind", cfg.upstreamKind, "status", status)
+		writeRunnerError(w, status, "upstream request failed")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if isStream && guardSSEContentType(resp.Header) == nil {
-		writeStreamingResponse(w, resp, usageField)
+	if isRefundableUpstreamStatus(resp.StatusCode) {
+		slog.Error("upstream vendor error", "upstream_kind", cfg.upstreamKind, "status", resp.StatusCode,
+			"vendor_request_id", vendorRequestID(resp.Header))
+		writeRunnerError(w, resp.StatusCode, "upstream request failed")
 		return
 	}
-	writePassThroughResponse(w, resp)
+
+	if isStream && guardSSEContentType(resp.Header) == nil {
+		writeStreamingResponseWeighted(w, resp, cfg.usageField, model, cfg.outputWeights)
+		return
+	}
+	writePassThroughResponseWeighted(w, resp, cfg.usageField, model, cfg.outputWeights)
+}
+
+// statusResponseWriter records the broker-facing status for the structured
+// request log while retaining streaming flush support.
+type statusResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *statusResponseWriter) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *statusResponseWriter) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
 }
 
 // writeStreamingResponse forwards an SSE response while counting
 // tokens, then emits X-Livepeer-Work-Units as an HTTP trailer.
 func writeStreamingResponse(w http.ResponseWriter, resp *http.Response, usageField string) {
+	writeStreamingResponseWeighted(w, resp, usageField, "", nil)
+}
+
+func writeStreamingResponseWeighted(w http.ResponseWriter, resp *http.Response, usageField, model string, weights map[string]uint64) {
 	// Declare the trailer BEFORE WriteHeader; Go's server promotes
 	// declared trailers to the wire trailer slot when set after the
 	// body. Tracks the broker's http-stream driver pattern.
-	w.Header().Set("Trailer", workUnitsTrailer)
+	w.Header().Set("Trailer", workUnitsHeader)
 	copyAllHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
@@ -185,13 +265,13 @@ func writeStreamingResponse(w http.ResponseWriter, resp *http.Response, usageFie
 		}
 	}
 
-	total := streamAndCountUsage(w, resp.Body, usageField, flush)
-	w.Header().Set(workUnitsTrailer, fmt.Sprintf("%d", total))
+	total := streamAndCalculateUsage(w, resp.Body, usageField, model, weights, flush)
+	w.Header().Set(workUnitsHeader, fmt.Sprintf("%d", total))
 }
 
-// writePassThroughResponse copies a non-streaming response (or an
-// unexpected non-SSE response) to the client. Token counting is left
-// to the broker's openai-usage extractor reading the body.
+// writePassThroughResponse copies a non-streaming response (or an unexpected
+// non-SSE response) to the client. For an unweighted model, token counting is
+// left to the broker's openai-usage extractor reading the body.
 func writePassThroughResponse(w http.ResponseWriter, resp *http.Response) {
 	copyAllHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -211,99 +291,75 @@ func writePassThroughResponse(w http.ResponseWriter, resp *http.Response) {
 	}
 }
 
-// optionsConfig captures the operator-supplied metadata the runner
-// surfaces via /<capability>/options. These map 1:1 to the fields the
-// broker's chat-options discovery merges into the capability's `extra`
-// block. Unset fields are simply omitted from the response so the
-// broker can fall back to any host-config-declared values.
-type optionsConfig struct {
-	servedModelName string
-	backendModel    string
-	contextLength   int
-	reasoningParser string
-	toolCallParser  string
-	quantization    string
-	upstreamKind    string // "vllm" or "ollama"; advertised in payload
+func writePassThroughResponseWeighted(w http.ResponseWriter, resp *http.Response, usageField, model string, weights map[string]uint64) {
+	if _, weighted := weights[model]; !weighted {
+		writePassThroughResponse(w, resp)
+		return
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		writeRunnerError(w, http.StatusBadGateway, "upstream response failed")
+		return
+	}
+	units, err := extractWorkUnits(body, usageField, model, weights)
+	if err != nil {
+		writeRunnerError(w, http.StatusBadGateway, "upstream response contained invalid usage")
+		return
+	}
+	copyAllHeaders(w.Header(), resp.Header)
+	w.Header().Set(workUnitsHeader, fmt.Sprintf("%d", units))
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(body)
 }
 
-func optionsConfigFromEnv() optionsConfig {
-	return optionsConfig{
-		servedModelName: env("SERVED_MODEL_NAME", ""),
-		backendModel:    env("BACKEND_MODEL", ""),
-		contextLength:   envInt("CONTEXT_LENGTH", 0),
-		reasoningParser: env("REASONING_PARSER", ""),
-		toolCallParser:  env("TOOL_CALL_PARSER", ""),
-		quantization:    env("QUANTIZATION", ""),
+func requestModel(body []byte) (string, error) {
+	var request struct {
+		Model string `json:"model"`
 	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		return "", err
+	}
+	return request.Model, nil
 }
 
-// buildOptionsPayload returns the structured /<capability>/options
-// payload the broker's chat-options discovery reads. Mirrors the shape
-// of the audio/video options endpoints so the broker can hydrate the
-// capability's `extra` block declaratively.
-//
-// The runner advertises:
-//   - models / served_model_name — sourced from vLLM `/v1/models` and
-//     the operator-supplied SERVED_MODEL_NAME (operator wins).
-//   - backend_model — HuggingFace path or other upstream identifier.
-//   - context_length — operator-declared max model length.
-//   - parsers — operator-declared reasoning / tool-call parsers.
-//   - quantization — operator-declared quantization scheme.
-//   - features — derived booleans: streaming is always true (this
-//     runner exists to count streaming tokens), include_usage_required
-//     is always true (vLLM only emits usage when the flag is set;
-//     this runner injects it for clients), tool_calling/reasoning are
-//     derived from whether the operator declared a parser.
-func buildOptionsPayload(models []string, cfg optionsConfig) map[string]any {
-	out := map[string]any{
-		"task":   "chat",
-		"models": models,
+func extractWorkUnits(body []byte, usageField, model string, weights map[string]uint64) (uint64, error) {
+	var envelope usageEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return 0, err
 	}
-	if kind := strings.TrimSpace(cfg.upstreamKind); kind != "" {
-		out["upstream_kind"] = kind
+	if envelope.Usage == nil {
+		return 0, fmt.Errorf("missing usage")
 	}
+	usage := *envelope.Usage
+	units, representable := calculateWorkUnits(usage, usageField, model, weights)
+	if !representable {
+		return 0, fmt.Errorf("weighted usage overflows uint64")
+	}
+	return units, nil
+}
 
-	served := cfg.servedModelName
-	if served == "" && len(models) > 0 {
-		served = models[0]
-	}
-	if served != "" {
-		out["served_model_name"] = served
-	}
-	if cfg.backendModel != "" {
-		out["backend_model"] = cfg.backendModel
-	}
-	if cfg.contextLength > 0 {
-		out["context_length"] = cfg.contextLength
-	}
-	if cfg.quantization != "" {
-		out["quantization"] = cfg.quantization
-	}
+func isRefundableUpstreamStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusTooManyRequests || status >= 500
+}
 
-	parsers := map[string]any{}
-	if cfg.reasoningParser != "" {
-		parsers["reasoning"] = cfg.reasoningParser
-	}
-	if cfg.toolCallParser != "" {
-		parsers["tool_call"] = cfg.toolCallParser
-	}
-	if len(parsers) > 0 {
-		out["parsers"] = parsers
-	}
+func writeRunnerError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set(runnerErrorHeader, "true")
+	writeOpenAIError(w, status, message, "upstream_error")
+}
 
-	features := map[string]any{
-		"streaming":              true,
-		"include_usage_required": true,
-	}
-	if cfg.reasoningParser != "" {
-		features["reasoning"] = true
-	}
-	if cfg.toolCallParser != "" {
-		features["tool_calling"] = true
-	}
-	out["features"] = features
+func writeOpenAIError(w http.ResponseWriter, status int, message, errorType string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": message, "type": errorType}})
+}
 
-	return out
+func vendorRequestID(header http.Header) string {
+	for _, name := range []string{"X-Request-ID", "Request-ID", "X-Dashscope-Request-ID"} {
+		if value := header.Get(name); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type livepeerHeader struct {
@@ -339,34 +395,56 @@ func upstreamBase(upstream string) string {
 	if err != nil {
 		return upstream
 	}
-	u.Path = ""
+	const completionSuffix = "/v1/chat/completions"
+	if strings.HasSuffix(strings.TrimRight(u.Path, "/"), completionSuffix) {
+		u.Path = strings.TrimSuffix(strings.TrimRight(u.Path, "/"), completionSuffix)
+	} else {
+		u.Path = strings.TrimRight(u.Path, "/")
+	}
 	u.RawPath = ""
 	u.RawQuery = ""
 	return u.String()
 }
 
 func discoverModelsWithRetry(base string, retries int, delay time.Duration) ([]string, error) {
+	return discoverModelsWithRetryConfig(http.DefaultClient, base, config{}, retries, delay)
+}
+
+func discoverModelsWithRetryConfig(client *http.Client, base string, cfg config, retries int, delay time.Duration) ([]string, error) {
 	for i := 0; i < retries; i++ {
 		if i > 0 {
 			time.Sleep(delay)
 		}
-		ids, err := discoverModels(base)
+		ids, err := discoverModelsWithConfig(client, base, cfg)
 		if err == nil {
 			return ids, nil
 		}
-		log.Printf("model discovery attempt %d/%d failed: %v", i+1, retries, err)
+		attrs := []any{"upstream_kind", cfg.upstreamKind, "attempt", i + 1, "attempts", retries}
+		var upstreamErr *upstreamRequestError
+		if errors.As(err, &upstreamErr) {
+			attrs = append(attrs, "status", upstreamErr.status, "vendor_request_id", upstreamErr.vendorRequestID)
+		}
+		slog.Warn("model discovery failed", attrs...)
 	}
 	return nil, fmt.Errorf("model discovery failed after %d attempts", retries)
 }
 
 func discoverModels(base string) ([]string, error) {
-	resp, err := http.Get(base + "/v1/models")
+	return discoverModelsWithConfig(http.DefaultClient, base, config{})
+}
+
+func discoverModelsWithConfig(client *http.Client, base string, cfg config) ([]string, error) {
+	req, err := newUpstreamRequest(context.Background(), http.MethodGet, base+"/v1/models", nil, cfg)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d from /v1/models", resp.StatusCode)
+		return nil, &upstreamRequestError{status: resp.StatusCode, vendorRequestID: vendorRequestID(resp.Header)}
 	}
 	var result struct {
 		Data []struct {
@@ -379,11 +457,40 @@ func discoverModels(base string) ([]string, error) {
 	if len(result.Data) == 0 {
 		return nil, fmt.Errorf("no models returned from %s/v1/models", base)
 	}
-	ids := make([]string, len(result.Data))
-	for i, m := range result.Data {
-		ids[i] = m.ID
+	ids := make([]string, 0, len(result.Data))
+	for _, m := range result.Data {
+		ids = append(ids, m.ID)
+	}
+	ids = cfg.modelAllowlist.filter(ids)
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("no upstream models matched MODEL_ALLOWLIST")
 	}
 	return ids, nil
+}
+
+// upstreamRequestError carries only the bounded metadata safe to expose in
+// logs. It intentionally cannot retain an upstream body or authorization.
+type upstreamRequestError struct {
+	status          int
+	vendorRequestID string
+}
+
+func (e *upstreamRequestError) Error() string {
+	return fmt.Sprintf("unexpected upstream status %d", e.status)
+}
+
+// newUpstreamRequest is the single construction path for discovery and chat
+// requests. Only the startup-loaded operator credential can become outbound
+// Authorization; inbound credentials are never passed to this function.
+func newUpstreamRequest(ctx context.Context, method, target string, body io.Reader, cfg config) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, target, body)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.upstreamAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.upstreamAPIKey)
+	}
+	return req, nil
 }
 
 func env(k, def string) string {

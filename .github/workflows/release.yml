@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v1.3.1)'
+        description: 'Tag to release (e.g. v2.0.1)'
         required: true
 
 permissions:
@@ -33,26 +33,46 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build all images at ${{ env.TAG }}
+      # PUSH=1 builds and pushes in one pass, refuses a dirty tree (the checkout
+      # is clean), and appends every pushed digest to infra/build/<TAG>-digests.txt.
+      - name: Build and push all images at ${{ env.TAG }}
         env:
-          REGISTRY: ${{ env.REGISTRY }}
-          TAG: ${{ env.TAG }}
+          PUSH: "1"
           PLATFORMS: linux/amd64,linux/arm64
-        run: ./build-images.sh build
+        run: ./infra/scripts/build-images.sh
 
-      - name: Push all images
+      # Pascal flavor: the default cu128 torch wheels carry sm_75+ kernels
+      # only, so a GTX 1080 (sm_61) needs the cu126 wheels. Same Dockerfiles,
+      # different wheel index, `-pascal` tag suffix. No image-generation
+      # variant: FLUX.1-dev cannot fit an 8 GB card whatever the CUDA base,
+      # and the catalog will not admit it (network-modules, 2026-09-05).
+      - name: Build and push the CUDA runners at ${{ env.TAG }}-pascal (cu126 wheels)
         env:
-          REGISTRY: ${{ env.REGISTRY }}
-          TAG: ${{ env.TAG }}
-        run: ./build-images.sh push
+          PUSH: "1"
+          TAG: ${{ env.TAG }}-pascal
+          PYTORCH_INDEX_URL: https://download.pytorch.org/whl/cu126
+        run: ./infra/scripts/build-images.sh openai-audio-runner openai-tts-runner rerank-runner
+
+      - name: Collect digest records
+        run: |
+          mkdir -p /tmp/digests
+          cp infra/build/${{ env.TAG }}-digests.txt infra/build/${{ env.TAG }}-pascal-digests.txt /tmp/digests/
+          cat /tmp/digests/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests
+          path: /tmp/digests/*.txt
 
   github-release:
     runs-on: ubuntu-latest
     needs: build-and-push
     steps:
       - uses: actions/checkout@v4
-      - name: Extract release notes from CHANGELOG.md
-        id: notes
+      - uses: actions/download-artifact@v4
+        with:
+          name: digests
+          path: /tmp/digests
+      - name: Release notes from CHANGELOG.md plus the pushed digests
         run: |
           tag="${{ env.TAG }}"
           # Pull the section between the matching heading and the next heading.
@@ -63,11 +83,22 @@ jobs:
           if [ ! -s /tmp/release-notes.md ]; then
             echo "No CHANGELOG entry for $tag; using auto-generated notes." > /tmp/release-notes.md
           fi
+          {
+            echo
+            echo '## Image digests'
+            echo
+            echo 'Pin these, not the tag. Check the two files in as `infra/build/` with the release.'
+            echo
+            echo '```'
+            cat /tmp/digests/*.txt
+            echo '```'
+          } >> /tmp/release-notes.md
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
           body_path: /tmp/release-notes.md
+          files: /tmp/digests/*.txt
           draft: false
           prerelease: false
           generate_release_notes: true

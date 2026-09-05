@@ -67,5 +67,16 @@ If you find yourself adding a third base, first ask:
    factoring it out is worth a new base image?
 
 If both answers are yes, write the Dockerfile under `infra/dockerfiles/`,
-add a build helper to [`build-images.sh`](./build-images.sh), and document the
+add a row to the image table in [`infra/scripts/build-images.sh`](./infra/scripts/build-images.sh), and document the
 consumer mapping here.
+
+## Flavors
+
+The four CUDA runners (`openai-audio-runner`, `openai-tts-runner`,
+`openai-image-generation-runner`, `rerank-runner`) install PyTorch at build
+time from `PYTORCH_INDEX_URL`. The default, cu128, ships kernels for sm_75+
+only. The `-pascal` flavor (audio, TTS and rerank; image generation has none
+because FLUX does not fit an 8 GB card) is the same Dockerfiles and the same base with
+`PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu126` (sm_50/60/70+)
+under `TAG=<version>-pascal`; the base is rebuilt under that tag too so base
+and consumer never mix tags. The release workflow publishes both.

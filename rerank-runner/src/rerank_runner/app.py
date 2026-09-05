@@ -7,9 +7,10 @@ from typing import Optional
 
 import torch
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from .contract import CONTRACT_PATH, DEFAULT_CAPABILITY, WORK_UNITS_HEADER, build_contract, default_model_alias
 from .gpu_probe import fail_fast_if_cuda_requested_without_gpu
 from .model_loader import DTYPE_MAP, CrossEncoderModel
 
@@ -23,10 +24,22 @@ MAX_BATCH_SIZE = int(os.environ.get("MAX_BATCH_SIZE", "1000"))
 INFERENCE_BATCH_SIZE = int(os.environ.get("INFERENCE_BATCH_SIZE", "64"))
 METRICS_ENABLED = os.environ.get("METRICS_ENABLED", "false").lower() in ("true", "1", "yes")
 
-CAPABILITY_NAME = os.environ.get("CAPABILITY_NAME", "rerank")
+CAPABILITY_NAME = os.environ.get("CAPABILITY_NAME", DEFAULT_CAPABILITY)
+# The name a caller uses and the catalog matches on (identity.model); the
+# HF path stays in x-backend-model.
+MODEL_ALIAS = os.environ.get("MODEL_ALIAS", default_model_alias(MODEL_ID))
+PROVIDER = "sentence-transformers"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("rerank-runner")
+
+CONTRACT = build_contract(
+    CAPABILITY_NAME,
+    model_alias=MODEL_ALIAS,
+    model_id=MODEL_ID,
+    provider=PROVIDER,
+    max_documents=MAX_BATCH_SIZE,
+)
 
 _cross_encoder = CrossEncoderModel()
 _semaphore: Optional[asyncio.Semaphore] = None
@@ -99,7 +112,7 @@ def _rerank_sync(query: str, doc_texts: list[str]) -> list[float]:
 
 
 @app.post("/v1/rerank", response_model=RerankResponse)
-async def rerank(req: RerankRequest):
+async def rerank(req: RerankRequest, response: Response):
     if not req.query or not req.query.strip():
         raise HTTPException(
             status_code=400,
@@ -163,10 +176,14 @@ async def rerank(req: RerankRequest):
             result.document = RerankResultDocument(text=doc_texts[idx])
         results.append(result)
 
+    # Work units are documents scored, not results returned: top_n trims
+    # the response, not the work. The broker's response-header extractor
+    # reads this.
+    response.headers[WORK_UNITS_HEADER] = str(len(doc_texts))
     return RerankResponse(
         id=f"rerank-{uuid.uuid4().hex[:12]}",
         results=results,
-        meta={"model": MODEL_ID},
+        meta={"model": MODEL_ALIAS, "backend_model": MODEL_ID},
     )
 
 
@@ -175,9 +192,9 @@ async def healthz():
     return {"status": "ok", "model": MODEL_ID, "device": DEVICE}
 
 
-@app.get(f"/{CAPABILITY_NAME}/options")
-async def options():
-    return {"models": [MODEL_ID]}
+@app.get(CONTRACT_PATH)
+async def runner_contract():
+    return JSONResponse(CONTRACT)
 
 
 if METRICS_ENABLED:

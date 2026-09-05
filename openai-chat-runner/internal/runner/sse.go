@@ -42,6 +42,13 @@ type usageFields struct {
 //   - Malformed JSON in individual frames (logged and skipped, count
 //     stays at the last good value)
 func streamAndCountUsage(dst io.Writer, src io.Reader, usageField string, flush func()) uint64 {
+	return streamAndCalculateUsage(dst, src, usageField, "", nil, flush)
+}
+
+// streamAndCalculateUsage is the streaming half of weighted accounting. It
+// shares calculateWorkUnits with non-streaming responses so both modes apply
+// OUTPUT_TOKEN_WEIGHT identically.
+func streamAndCalculateUsage(dst io.Writer, src io.Reader, usageField, model string, weights map[string]uint64, flush func()) uint64 {
 	var lastTotal uint64
 	scanner := bufio.NewScanner(src)
 	scanner.Buffer(make([]byte, 0, 64*1024), sseMaxLineBytes)
@@ -56,8 +63,10 @@ func streamAndCountUsage(dst io.Writer, src io.Reader, usageField string, flush 
 			flush()
 		}
 		if frame, ok := parseDataFrame(line); ok {
-			if n, present := extractUsageField(frame, usageField); present {
-				lastTotal = n
+			if usage, present := extractUsage(frame); present {
+				if n, representable := calculateWorkUnits(usage, usageField, model, weights); representable {
+					lastTotal = n
+				}
 			}
 		}
 	}
@@ -94,21 +103,23 @@ func parseDataFrame(line []byte) ([]byte, bool) {
 // Frames without `usage` (typical of intermediate token chunks) return
 // (0, false); the caller keeps the previously seen value.
 func extractUsageField(payload []byte, field string) (uint64, bool) {
+	usage, ok := extractUsage(payload)
+	if !ok {
+		return 0, false
+	}
+	value, representable := calculateWorkUnits(usage, field, "", nil)
+	return value, representable
+}
+
+func extractUsage(payload []byte) (usageFields, bool) {
 	var env usageEnvelope
 	if err := json.Unmarshal(payload, &env); err != nil {
-		return 0, false
+		return usageFields{}, false
 	}
 	if env.Usage == nil {
-		return 0, false
+		return usageFields{}, false
 	}
-	switch field {
-	case "prompt_tokens":
-		return env.Usage.PromptTokens, true
-	case "completion_tokens":
-		return env.Usage.CompletionTokens, true
-	default:
-		return env.Usage.TotalTokens, true
-	}
+	return *env.Usage, true
 }
 
 // ensureIncludeUsage edits a streaming chat-completions request body so

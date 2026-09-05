@@ -1,4 +1,4 @@
-capability: rerank
+capability: text:rerank
 description: |
   Cohere-compatible reranking runner. Loads a sentence-transformers
   CrossEncoder (default zerank-2, a 4-billion-parameter Qwen3-based

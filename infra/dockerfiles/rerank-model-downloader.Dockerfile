@@ -3,10 +3,14 @@
 
 ARG REGISTRY=tztcloud
 ARG LOCAL_REGISTRY=local
-ARG TAG=v1.3.0
+ARG TAG=v2.0.0
 ARG BASE_IMAGE=${LOCAL_REGISTRY}/python-base:${TAG}
 
 FROM ${BASE_IMAGE}
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 
 WORKDIR /app
 

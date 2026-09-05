@@ -10,15 +10,20 @@ COPY openai-embeddings-runner/go.mod ./
 COPY openai-embeddings-runner/ ./
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /bin/embeddings-runner ./cmd/runner
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /bin/embeddings-runner ./cmd/runner
 
 FROM alpine:${ALPINE_VERSION}
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 RUN apk add --no-cache curl ca-certificates \
     && adduser -D runner
 USER runner
 ENV RUNNER_ADDR=:8080 \
-    CAPABILITY_NAME=openai-text-embeddings \
+    CAPABILITY_NAME=openai:embeddings \
     USAGE_FIELD=total_tokens
 EXPOSE 8080
 COPY --from=build /bin/embeddings-runner /runner

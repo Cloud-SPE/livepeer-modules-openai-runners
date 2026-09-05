@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import subprocess
+import sys
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -12,6 +13,7 @@ import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
+from .contract import CONTRACT_PATH, WORK_UNITS_HEADER, build_contract, select_capabilities
 from .gpu_probe import fail_fast_if_cuda_requested_without_gpu
 from .whisper_loader import DTYPE_MAP, TARGET_SAMPLE_RATE, WhisperPipeline
 
@@ -26,14 +28,29 @@ CHUNK_LENGTH_S = int(os.environ.get("CHUNK_LENGTH_S", "30"))
 INFERENCE_BATCH_SIZE = int(os.environ.get("INFERENCE_BATCH_SIZE", "16"))
 METRICS_ENABLED = os.environ.get("METRICS_ENABLED", "false").lower() in ("true", "1", "yes")
 
-CAPABILITY_NAME = os.environ.get("CAPABILITY_NAME", "openai-audio-transcriptions")
-CAP_TRANSCRIPTIONS = "openai-audio-transcriptions"
-CAP_TRANSLATIONS = "openai-audio-translations"
-MODEL_ALIAS = "whisper-large-v3"
+# Unset: serve both openai:audio-transcriptions and openai:audio-translations.
+# Set to one of the two: serve only that entry (the pool-host shape).
+CAPABILITY_NAME = os.environ.get("CAPABILITY_NAME", "")
+MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "whisper-large-v3")
+PROVIDER = "transformers"
 
 SUPPORTED_RESPONSE_FORMATS = {"json", "text", "srt", "vtt", "verbose_json"}
 SUPPORTED_INPUT_FORMATS = ["mp3", "wav", "m4a", "flac"]
-WORK_UNITS_HEADER = "X-Livepeer-Work-Units"
+
+try:
+    SERVED_CAPABILITIES = select_capabilities(CAPABILITY_NAME)
+except ValueError as exc:
+    sys.stderr.write(f"configuration error: {exc}\n")
+    sys.exit(1)
+
+CONTRACT = build_contract(
+    CAPABILITY_NAME,
+    model_alias=MODEL_ALIAS,
+    model_id=MODEL_ID,
+    provider=PROVIDER,
+    input_formats=SUPPORTED_INPUT_FORMATS,
+    output_formats=SUPPORTED_RESPONSE_FORMATS,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("whisper-runner")
@@ -170,7 +187,7 @@ async def lifespan(app: FastAPI):
 
     _semaphore = asyncio.Semaphore(MAX_QUEUE_SIZE)
 
-    logger.info(f"Whisper runner ready — model={MODEL_ID}, queue_size={MAX_QUEUE_SIZE}")
+    logger.info(f"Whisper runner ready — model={MODEL_ID}, capabilities={SERVED_CAPABILITIES}, queue_size={MAX_QUEUE_SIZE}")
     yield
 
     logger.info("Shutting down, releasing GPU memory...")
@@ -282,28 +299,9 @@ async def healthz():
     return {"status": "ok", "model": MODEL_ID, "device": DEVICE}
 
 
-@app.get(f"/{CAP_TRANSCRIPTIONS}/options")
-async def transcriptions_options():
-    return {
-        "models": [MODEL_ALIAS],
-        "task": "transcription",
-        "formats": {
-            "input": SUPPORTED_INPUT_FORMATS,
-            "output": sorted(SUPPORTED_RESPONSE_FORMATS),
-        },
-    }
-
-
-@app.get(f"/{CAP_TRANSLATIONS}/options")
-async def translations_options():
-    return {
-        "models": [MODEL_ALIAS],
-        "task": "translation",
-        "formats": {
-            "input": SUPPORTED_INPUT_FORMATS,
-            "output": sorted(SUPPORTED_RESPONSE_FORMATS),
-        },
-    }
+@app.get(CONTRACT_PATH)
+async def runner_contract():
+    return JSONResponse(CONTRACT)
 
 
 if METRICS_ENABLED:

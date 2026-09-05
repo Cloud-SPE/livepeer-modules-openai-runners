@@ -22,7 +22,8 @@ load-bearing decisions):
 
 - **Runners are blind to customer identity.** No auth, billing, or payment
   validation inside the runner.
-- **Capability identity is image-tag-pinned.** One `CAPABILITY_NAME` per image.
+- **Capability identity is image-tag-pinned.** One `CAPABILITY_NAME` per image,
+  declared by the runner itself at `GET /.well-known/livepeer-runner`.
 - **GPU probe fails fast.** ML runners exit non-zero if `DEVICE=cuda` and no GPU.
 - **Metrics are opt-in.** `METRICS_ENABLED=true` exposes `/metrics`.
 - **Multi-arch policy.** ML runners ship amd64-only; Go runners ship amd64+arm64.
@@ -69,22 +70,31 @@ under [`infra/compose/`](./infra/compose/); offering manifests under
 
 ## Doing work in this repo
 
-- **Build everything**: `./build-images.sh build`. Validates compose:
-  `./build-images.sh validate`. See [`build-images.sh`](./build-images.sh) for
-  subcommands.
-- **Default tag**: `v1.3.0`. Default registry: `tztcloud`. Override via
-  `TAG=` and `REGISTRY=` env vars.
+- **Build everything**: `./infra/scripts/build-images.sh` (substring filters
+  select a subset; bases are added). Push: `PUSH=1` on the same script —
+  clean tree only, digests printed and recorded under `infra/build/`.
+  Validate compose: `./infra/scripts/validate-compose.sh`. Unit tests in
+  Docker: `./infra/scripts/test.sh`. The root `build-images.sh` is a shim
+  for the old subcommands.
+- **Default tag and toolchain pins** live in
+  [`infra/build/image-versions.env`](./infra/build/image-versions.env)
+  (`v2.0.0`). Default registry: `tztcloud`. Override via `TAG=` and
+  `REGISTRY=`. The `-pascal` flavor of the four CUDA runners is the same
+  Dockerfiles with `PYTORCH_INDEX_URL` on cu126.
 - **All gestures are Docker-first.** Do not introduce steps that require host
   Python, host Go, or host Node.
 - **Build context is repo root.** Every Dockerfile in `infra/dockerfiles/`
   expects to be built with `-f infra/dockerfiles/<name>.Dockerfile .`
 - **Capability names are canonical.** See
-  [`CANONICAL-CAPABILITIES.md`](./CANONICAL-CAPABILITIES.md). One value per image.
+  [`CANONICAL-CAPABILITIES.md`](./CANONICAL-CAPABILITIES.md). Colon form
+  (`openai:chat-completions`, `text:rerank`); one value per image.
 
 ## What lives elsewhere
 
-- **Capability broker.** The orch-side dispatcher that forwards requests to
-  these runners. Lives in a sibling repo; runners only see fully-authenticated
+- **Capability broker and pool member agent.** The agent reads each runner's
+  contract and relays it; the broker validates it, matches it to a catalog
+  template, and dispatches paid jobs to the paths the runner declared. Both
+  live in `livepeer-network-modules`; runners only see fully-authenticated
   HTTP requests at their declared endpoint.
 - **Customer auth, billing, payment validation.** Handled upstream of these
   runners. The runner is blind to customer identity.
