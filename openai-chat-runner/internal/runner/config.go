@@ -15,6 +15,7 @@ type modelAllowlist map[string]struct{}
 
 const (
 	upstreamVLLM      upstreamKind = "vllm"
+	upstreamOllama    upstreamKind = "ollama"
 	upstreamOpenAI    upstreamKind = "openai"
 	upstreamDashScope upstreamKind = "dashscope"
 )
@@ -33,7 +34,7 @@ type config struct {
 	outputWeights    map[string]uint64
 	maxBodyBytes     int64
 	discoveryRetries int
-	options          optionsConfig
+	contract         contractConfig
 }
 
 func configFromEnv() (config, error) {
@@ -45,7 +46,7 @@ func configFromEnv() (config, error) {
 		usageField:       env("USAGE_FIELD", "total_tokens"),
 		maxBodyBytes:     defaultMaxBodyBytes,
 		discoveryRetries: envInt("MODEL_DISCOVERY_RETRIES", 10),
-		options:          optionsConfigFromEnv(),
+		contract:         contractConfigFromEnv(),
 	}
 	if cfg.upstreamURL == "" {
 		return config{}, fmt.Errorf("UPSTREAM_URL is required, e.g. http://HOST:PORT%s", defaultEndpoint)
@@ -57,12 +58,12 @@ func configFromEnv() (config, error) {
 
 	kind := strings.TrimSpace(env("UPSTREAM_KIND", string(upstreamVLLM)))
 	switch upstreamKind(kind) {
-	case upstreamVLLM, upstreamOpenAI, upstreamDashScope:
+	case upstreamVLLM, upstreamOllama, upstreamOpenAI, upstreamDashScope:
 		cfg.upstreamKind = upstreamKind(kind)
 	default:
-		return config{}, fmt.Errorf("UPSTREAM_KIND must be one of vllm, openai, or dashscope; got %q", kind)
+		return config{}, fmt.Errorf("UPSTREAM_KIND must be one of vllm, ollama, openai, or dashscope; got %q", kind)
 	}
-	cfg.options.upstreamKind = string(cfg.upstreamKind)
+	cfg.contract.upstreamKind = string(cfg.upstreamKind)
 
 	var err error
 	cfg.modelAllowlist, err = parseModelAllowlist(os.Getenv("MODEL_ALLOWLIST"))
@@ -73,8 +74,8 @@ func configFromEnv() (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("OUTPUT_TOKEN_WEIGHT: %w", err)
 	}
-	if cfg.options.servedModelName != "" && !cfg.modelAllowlist.allows(cfg.options.servedModelName) {
-		return config{}, fmt.Errorf("SERVED_MODEL_NAME %q is not present in MODEL_ALLOWLIST", cfg.options.servedModelName)
+	if cfg.contract.servedModelName != "" && !cfg.modelAllowlist.allows(cfg.contract.servedModelName) {
+		return config{}, fmt.Errorf("SERVED_MODEL_NAME %q is not present in MODEL_ALLOWLIST", cfg.contract.servedModelName)
 	}
 	return cfg, nil
 }

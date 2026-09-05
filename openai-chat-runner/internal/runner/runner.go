@@ -7,12 +7,15 @@
 //     for a final `usage` block (emitted by vLLM when
 //     `stream_options.include_usage: true`), then declares
 //     `X-Livepeer-Work-Units` as an HTTP trailer and emits the token
-//     count after the body. The broker's response-trailer extractor
-//     reads this trailer.
+//     count after the body.
 //
 //   - Non-streaming requests: the runner passes the response through
-//     unchanged. The broker uses its usual openai-usage extractor to
-//     read `usage.total_tokens` from the JSON body.
+//     unchanged (a model with OUTPUT_TOKEN_WEIGHT gets the header).
+//
+// Either way the contract the runner serves at
+// /.well-known/livepeer-runner declares the `openai-usage` extractor, so
+// the broker bills from the usage block in the body (the final SSE usage
+// frame on streams); the trailer/header is the runner's own claim.
 //
 // Auto-injects `stream_options.include_usage: true` on streaming
 // requests when absent, so clients don't have to know about the
@@ -40,9 +43,12 @@ import (
 
 const (
 	defaultEndpoint     = "/v1/chat/completions"
-	defaultCapability   = "openai-chat-completions"
+	defaultCapability   = "openai:chat-completions"
 	defaultMaxBodyBytes = int64(5 << 20)
-	workUnitsTrailer    = "X-Livepeer-Work-Units"
+	// workUnitsHeader is the runner-side usage signal: an HTTP trailer on
+	// streams, a header on weighted unary responses. Informational — the
+	// contract declares openai-usage, which the broker reads from the body.
+	workUnitsHeader     = "X-Livepeer-Work-Units"
 	runnerErrorHeader   = "X-Livepeer-Runner-Error"
 )
 
@@ -81,8 +87,12 @@ func Run() {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "models": models})
 	})
 
-	mux.HandleFunc("/"+cfg.capability+"/options", func(w http.ResponseWriter, r *http.Request) {
-		handleOptions(w, r, cfg, &discoveredModels)
+	mux.HandleFunc(contractPath, func(w http.ResponseWriter, r *http.Request) {
+		handleContract(w, r, cfg, &discoveredModels)
+	})
+
+	mux.HandleFunc(modelsPath, func(w http.ResponseWriter, r *http.Request) {
+		handleModels(w, r, cfg, &discoveredModels)
 	})
 
 	slog.Info("openai-chat-runner listening", "addr", cfg.addr, "capability", cfg.capability,
@@ -239,7 +249,7 @@ func writeStreamingResponseWeighted(w http.ResponseWriter, resp *http.Response, 
 	// Declare the trailer BEFORE WriteHeader; Go's server promotes
 	// declared trailers to the wire trailer slot when set after the
 	// body. Tracks the broker's http-stream driver pattern.
-	w.Header().Set("Trailer", workUnitsTrailer)
+	w.Header().Set("Trailer", workUnitsHeader)
 	copyAllHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
@@ -251,7 +261,7 @@ func writeStreamingResponseWeighted(w http.ResponseWriter, resp *http.Response, 
 	}
 
 	total := streamAndCalculateUsage(w, resp.Body, usageField, model, weights, flush)
-	w.Header().Set(workUnitsTrailer, fmt.Sprintf("%d", total))
+	w.Header().Set(workUnitsHeader, fmt.Sprintf("%d", total))
 }
 
 // writePassThroughResponse copies a non-streaming response (or an unexpected
@@ -292,7 +302,7 @@ func writePassThroughResponseWeighted(w http.ResponseWriter, resp *http.Response
 		return
 	}
 	copyAllHeaders(w.Header(), resp.Header)
-	w.Header().Set(workUnitsTrailer, fmt.Sprintf("%d", units))
+	w.Header().Set(workUnitsHeader, fmt.Sprintf("%d", units))
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
 }
@@ -345,112 +355,6 @@ func vendorRequestID(header http.Header) string {
 		}
 	}
 	return ""
-}
-
-// optionsConfig captures the operator-supplied metadata the runner
-// surfaces via /<capability>/options. These map 1:1 to the fields the
-// broker's chat-options discovery merges into the capability's `extra`
-// block. Unset fields are simply omitted from the response so the
-// broker can fall back to any host-config-declared values.
-type optionsConfig struct {
-	servedModelName string
-	backendModel    string
-	contextLength   int
-	reasoningParser string
-	toolCallParser  string
-	quantization    string
-	upstreamKind    string // bounded vendor kind; advertised in payload
-}
-
-func optionsConfigFromEnv() optionsConfig {
-	return optionsConfig{
-		servedModelName: env("SERVED_MODEL_NAME", ""),
-		backendModel:    env("BACKEND_MODEL", ""),
-		contextLength:   envInt("CONTEXT_LENGTH", 0),
-		reasoningParser: env("REASONING_PARSER", ""),
-		toolCallParser:  env("TOOL_CALL_PARSER", ""),
-		quantization:    env("QUANTIZATION", ""),
-	}
-}
-
-// buildOptionsPayload returns the structured /<capability>/options
-// payload the broker's chat-options discovery reads. Mirrors the shape
-// of the audio/video options endpoints so the broker can hydrate the
-// capability's `extra` block declaratively.
-//
-// The runner advertises:
-//   - models / served_model_name — sourced from vLLM `/v1/models` and
-//     the operator-supplied SERVED_MODEL_NAME (operator wins).
-//   - backend_model — HuggingFace path or other upstream identifier.
-//   - context_length — operator-declared max model length.
-//   - parsers — operator-declared reasoning / tool-call parsers.
-//   - quantization — operator-declared quantization scheme.
-//   - features — derived booleans: streaming is always true (this
-//     runner exists to count streaming tokens), include_usage_required
-//     is always true (vLLM only emits usage when the flag is set;
-//     this runner injects it for clients), tool_calling/reasoning are
-//     derived from whether the operator declared a parser.
-func buildOptionsPayload(models []string, cfg optionsConfig) map[string]any {
-	out := map[string]any{
-		"task":   "chat",
-		"models": models,
-	}
-	if kind := strings.TrimSpace(cfg.upstreamKind); kind != "" {
-		out["upstream_kind"] = kind
-	}
-
-	served := cfg.servedModelName
-	if served == "" && len(models) > 0 {
-		served = models[0]
-	}
-	if served != "" {
-		out["served_model_name"] = served
-	}
-	if cfg.backendModel != "" {
-		out["backend_model"] = cfg.backendModel
-	}
-	if cfg.contextLength > 0 {
-		out["context_length"] = cfg.contextLength
-	}
-	if cfg.quantization != "" {
-		out["quantization"] = cfg.quantization
-	}
-
-	parsers := map[string]any{}
-	if cfg.reasoningParser != "" {
-		parsers["reasoning"] = cfg.reasoningParser
-	}
-	if cfg.toolCallParser != "" {
-		parsers["tool_call"] = cfg.toolCallParser
-	}
-	if len(parsers) > 0 {
-		out["parsers"] = parsers
-	}
-
-	features := map[string]any{
-		"streaming":              true,
-		"include_usage_required": true,
-	}
-	if cfg.reasoningParser != "" {
-		features["reasoning"] = true
-	}
-	if cfg.toolCallParser != "" {
-		features["tool_calling"] = true
-	}
-	out["features"] = features
-
-	return out
-}
-
-func handleOptions(w http.ResponseWriter, r *http.Request, cfg config, discoveredModels *atomic.Value) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	models, _ := loadModels(discoveredModels)
-	models = cfg.modelAllowlist.filter(models)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(buildOptionsPayload(models, cfg.options))
 }
 
 type livepeerHeader struct {

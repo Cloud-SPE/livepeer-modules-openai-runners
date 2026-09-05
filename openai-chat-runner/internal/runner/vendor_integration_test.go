@@ -86,8 +86,11 @@ func TestVendorPhaseZeroIntegration(t *testing.T) {
 		loaded, _ := loadModels(&discovered)
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "models": loaded})
 	})
-	mux.HandleFunc("/"+cfg.capability+"/options", func(w http.ResponseWriter, r *http.Request) {
-		handleOptions(w, r, cfg, &discovered)
+	mux.HandleFunc(contractPath, func(w http.ResponseWriter, r *http.Request) {
+		handleContract(w, r, cfg, &discovered)
+	})
+	mux.HandleFunc(modelsPath, func(w http.ResponseWriter, r *http.Request) {
+		handleModels(w, r, cfg, &discovered)
 	})
 	proxy := httptest.NewServer(mux)
 	t.Cleanup(proxy.Close)
@@ -114,7 +117,41 @@ func TestVendorPhaseZeroIntegration(t *testing.T) {
 		}
 	}
 	assertModels("/healthz", "")
-	assertModels("/"+defaultCapability+"/options", "openai")
+
+	// The contract advertises exactly the allowlisted model, with the
+	// vendor kind as identity.provider.
+	contractResp, err := http.Get(proxy.URL + contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry struct {
+		CapabilityID string            `json:"capability_id"`
+		Identity     map[string]string `json:"identity"`
+	}
+	if err := json.NewDecoder(contractResp.Body).Decode(&entry); err != nil {
+		t.Fatalf("contract should be a single entry for one allowlisted model: %v", err)
+	}
+	_ = contractResp.Body.Close()
+	if entry.CapabilityID != cfg.capability || entry.Identity["openai.model"] != mockvendor.AllowedModel || entry.Identity["provider"] != "openai" {
+		t.Fatalf("contract entry = %+v", entry)
+	}
+
+	modelsResp, err := http.Get(proxy.URL + modelsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(modelsResp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	_ = modelsResp.Body.Close()
+	if len(list.Data) != 1 || list.Data[0].ID != mockvendor.AllowedModel {
+		t.Fatalf("/v1/models = %+v; hidden model was not filtered", list.Data)
+	}
 
 	chatCallsBefore := countVendorChatCalls(vendor.Requests())
 	hidden := doChatRequest(t, proxy.URL, clientKey, mockvendor.HiddenModel, false)
@@ -140,10 +177,10 @@ func TestVendorPhaseZeroIntegration(t *testing.T) {
 		if stream && !bytes.Contains(body, []byte("data: [DONE]")) {
 			t.Fatalf("streaming fixture was not forwarded: %s", body)
 		}
-		if got := resp.Header.Get(workUnitsTrailer); !stream && got != "26" {
+		if got := resp.Header.Get(workUnitsHeader); !stream && got != "26" {
 			t.Fatalf("non-streaming work units = %q; want %d", got, wantUnits)
 		}
-		if got := resp.Trailer.Get(workUnitsTrailer); stream && got != "26" {
+		if got := resp.Trailer.Get(workUnitsHeader); stream && got != "26" {
 			t.Fatalf("streaming work units trailer = %q; want %d (headers=%v trailers=%v body=%s)", got, wantUnits, resp.Header, resp.Trailer, body)
 		}
 	}

@@ -79,9 +79,9 @@ func TestHandler_StreamingEmitsTrailer(t *testing.T) {
 	// Trailer should carry the work-units value.
 	// httptest.ResponseRecorder exposes trailers on its Header() map
 	// because they're declared via the Trailer response header.
-	gotTrailer := rec.Header().Get(workUnitsTrailer)
+	gotTrailer := rec.Header().Get(workUnitsHeader)
 	if gotTrailer != "42" {
-		t.Fatalf("trailer %s = %q; want %q", workUnitsTrailer, gotTrailer, "42")
+		t.Fatalf("trailer %s = %q; want %q", workUnitsHeader, gotTrailer, "42")
 	}
 }
 
@@ -109,7 +109,7 @@ func TestHandler_NonStreamingPassesThrough(t *testing.T) {
 	}
 	// No trailer should be set on non-streaming responses; the broker
 	// uses openai-usage on the body for those.
-	if got := rec.Header().Get(workUnitsTrailer); got != "" {
+	if got := rec.Header().Get(workUnitsHeader); got != "" {
 		t.Fatalf("non-streaming response should not set work-units trailer; got %q", got)
 	}
 }
@@ -322,12 +322,12 @@ func TestHandler_WeightedAccountingMatchesAcrossModes(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if stream {
-				if got := rec.Header().Get(workUnitsTrailer); got != "72" {
+				if got := rec.Header().Get(workUnitsHeader); got != "72" {
 					t.Fatalf("streaming work units = %q; want 72", got)
 				}
 				return
 			}
-			if got := rec.Header().Get(workUnitsTrailer); got != "72" {
+			if got := rec.Header().Get(workUnitsHeader); got != "72" {
 				t.Fatalf("non-streaming work units = %q; want 72", got)
 			}
 			const wantBody = ` { "usage": { "prompt_tokens": 12, "completion_tokens": 30, "total_tokens": 42 } } `
@@ -361,12 +361,12 @@ func TestHandler_UnweightedModelRetainsUsageFieldBehavior(t *testing.T) {
 			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, defaultEndpoint, bytes.NewReader(body)))
 
 			if stream {
-				if got := rec.Header().Get(workUnitsTrailer); got != "30" {
+				if got := rec.Header().Get(workUnitsHeader); got != "30" {
 					t.Fatalf("streaming completion_tokens units = %q; want 30", got)
 				}
 				return
 			}
-			if got := rec.Header().Get(workUnitsTrailer); got != "" {
+			if got := rec.Header().Get(workUnitsHeader); got != "" {
 				t.Fatalf("unweighted non-streaming response gained work-units header %q", got)
 			}
 			if rec.Body.String() != responseBody {

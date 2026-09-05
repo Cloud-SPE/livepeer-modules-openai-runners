@@ -25,7 +25,7 @@ func TestConfigFromEnvVendorDefaults(t *testing.T) {
 
 func TestConfigFromEnvRejectsInvalidUpstreamKindAndURL(t *testing.T) {
 	t.Setenv("UPSTREAM_URL", "http://upstream.test/v1/chat/completions")
-	t.Setenv("UPSTREAM_KIND", "ollama")
+	t.Setenv("UPSTREAM_KIND", "sglang-nope")
 	if _, err := configFromEnv(); err == nil || !strings.Contains(err.Error(), "UPSTREAM_KIND") {
 		t.Fatalf("invalid kind error = %v", err)
 	}
