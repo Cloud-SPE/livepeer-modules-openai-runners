@@ -12,10 +12,10 @@ set -euo pipefail
 #
 # Environment:
 #   REGISTRY  Docker registry prefix (default: tztcloud)
-#   TAG       Image tag (default: v1.3.0)
+#   TAG       Image tag (default: v2.0.0)
 
 REGISTRY="${REGISTRY:-tztcloud}"
-TAG="${TAG:-v1.3.0}"
+TAG="${TAG:-v2.0.0}"
 
 DOWNLOADER_IMAGE="${REGISTRY}/image-model-downloader:${TAG}"
 RUNNER_IMAGE="${REGISTRY}/openai-image-generation-runner:${TAG}"

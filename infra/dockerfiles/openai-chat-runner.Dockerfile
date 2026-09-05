@@ -18,7 +18,7 @@ RUN apk add --no-cache curl ca-certificates \
     && adduser -D runner
 USER runner
 ENV RUNNER_ADDR=:8080 \
-    CAPABILITY_NAME=openai-chat-completions \
+    CAPABILITY_NAME=openai:chat-completions \
     USAGE_FIELD=total_tokens
 EXPOSE 8080
 COPY --from=build /bin/chat-runner /runner

@@ -5,10 +5,11 @@
 
 services:
   openai_audio_runner:
-    image: ${REGISTRY:-tztcloud}/openai-audio-runner:${TAG:-v1.3.0}
+    image: ${REGISTRY:-tztcloud}/openai-audio-runner:${TAG:-v2.0.0}
     runtime: nvidia
     environment:
-      - CAPABILITY_NAME=openai-audio-transcriptions
+      # unset = both openai:audio-transcriptions and openai:audio-translations
+      - CAPABILITY_NAME=${AUDIO_CAPABILITY_NAME:-}
       - MODEL_ID=${AUDIO_MODEL_ID:-openai/whisper-large-v3}
       - MODEL_DIR=/models
       - RUNNER_PORT=8080
@@ -25,10 +26,10 @@ services:
       - "${AUDIO_RUNNER_PORT:-8084}:8080"
 
   openai_tts_runner:
-    image: ${REGISTRY:-tztcloud}/openai-tts-runner:${TAG:-v1.3.0}
+    image: ${REGISTRY:-tztcloud}/openai-tts-runner:${TAG:-v2.0.0}
     runtime: nvidia
     environment:
-      - CAPABILITY_NAME=openai-audio-speech
+      - CAPABILITY_NAME=openai:audio-speech
       - MODEL_ID=${TTS_MODEL_ID:-hexgrad/Kokoro-82M}
       - MODEL_DIR=/models
       - RUNNER_PORT=8080

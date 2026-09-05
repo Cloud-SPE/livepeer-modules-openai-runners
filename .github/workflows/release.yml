@@ -46,6 +46,22 @@ jobs:
           TAG: ${{ env.TAG }}
         run: ./build-images.sh push
 
+      # Pascal flavor: the default cu128 torch wheels carry sm_75+ kernels
+      # only, so a GTX 1080 (sm_61) needs the cu126 wheels. Same
+      # Dockerfiles, different wheel index, `-pascal` tag suffix.
+      - name: Build CUDA runners at ${{ env.TAG }}-pascal (cu126 wheels)
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          TAG: ${{ env.TAG }}-pascal
+          PYTORCH_INDEX_URL: https://download.pytorch.org/whl/cu126
+        run: ./build-images.sh build cuda13-python-base openai-audio-runner openai-tts-runner openai-image-generation-runner rerank-runner
+
+      - name: Push Pascal flavor
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          TAG: ${{ env.TAG }}-pascal
+        run: ./build-images.sh push openai-audio-runner openai-tts-runner openai-image-generation-runner rerank-runner
+
   github-release:
     runs-on: ubuntu-latest
     needs: build-and-push

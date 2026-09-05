@@ -3,7 +3,7 @@
 
 ARG REGISTRY=tztcloud
 ARG LOCAL_REGISTRY=local
-ARG TAG=v1.3.0
+ARG TAG=v2.0.0
 ARG BASE_IMAGE=${LOCAL_REGISTRY}/cuda13-python-base:${TAG}
 ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 
@@ -42,7 +42,7 @@ RUN mkdir -p /models && chown -R runner:runner /models /etc/runner
 
 VOLUME /models
 
-ENV CAPABILITY_NAME=rerank \
+ENV CAPABILITY_NAME=text:rerank \
     MODEL_ID=zeroentropy/zerank-2 \
     MODEL_DIR=/models \
     RUNNER_PORT=8080 \

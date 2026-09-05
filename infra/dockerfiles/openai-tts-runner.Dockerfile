@@ -3,7 +3,7 @@
 
 ARG REGISTRY=tztcloud
 ARG LOCAL_REGISTRY=local
-ARG TAG=v1.3.0
+ARG TAG=v2.0.0
 ARG BASE_IMAGE=${LOCAL_REGISTRY}/cuda13-python-base:${TAG}
 ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 
@@ -52,7 +52,7 @@ RUN mkdir -p /models/huggingface && chown -R runner:runner /models /etc/runner
 
 VOLUME /models
 
-ENV CAPABILITY_NAME=openai-audio-speech \
+ENV CAPABILITY_NAME=openai:audio-speech \
     MODEL_ID=hexgrad/Kokoro-82M \
     MODEL_DIR=/models \
     RUNNER_PORT=8080 \

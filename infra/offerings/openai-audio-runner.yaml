@@ -1,4 +1,4 @@
-capability: openai-audio-transcriptions
+capability: [openai:audio-transcriptions, openai:audio-translations]
 description: |
   Whisper-based speech-to-text runner. Serves both OpenAI-compatible
   /v1/audio/transcriptions and /v1/audio/translations endpoints. Default

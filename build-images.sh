@@ -5,6 +5,7 @@
 #   build [name ...]   Build all images, or a named subset. Respects base-image deps.
 #   push  [name ...]   Push built images to ${REGISTRY}. REQUIRES `docker login` first.
 #   validate           Run `docker compose config` against every overlay in infra/compose/.
+#   test               Run the Go and Python unit tests inside Docker (no host toolchain).
 #   clean              Remove locally-built images for ${REGISTRY}/${TAG}.
 #   help               Show this help.
 #
@@ -13,11 +14,15 @@
 #                         Only pushed images use this.
 #   LOCAL_REGISTRY        Prefix for build-only artifacts (default: local).
 #                         Bases + smoke tester are tagged here and never pushed.
-#   TAG                   Image tag (default: v1.3.0)
+#   TAG                   Image tag (default: v2.0.0)
 #   PLATFORMS             Buildx platforms (default: linux/amd64). Go runners
 #                         honor this; ML runners pin to linux/amd64.
-#   PYTORCH_INDEX_URL     PyTorch wheel index. Default cu128 (latest cu12x).
-#                         Switch to cu130 once PyTorch publishes CUDA 13 wheels.
+#   PYTORCH_INDEX_URL     PyTorch wheel index. Default cu128, whose wheels carry
+#                         sm_75+ kernels only. For Pascal cards (sm_6x, e.g. a
+#                         GTX 1080) build the `-pascal` flavor:
+#                           TAG=v2.0.0-pascal PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu126 \
+#                             ./build-images.sh build cuda13-python-base openai-audio-runner \
+#                             openai-tts-runner openai-image-generation-runner rerank-runner
 #   CUDA_VERSION          NVIDIA CUDA tag (default: 13.2.1).
 #   PYTHON_VERSION        Python version for both bases (default: 3.13).
 #   GO_VERSION            Go toolchain (default: 1.25.7).
@@ -30,7 +35,7 @@ cd "$ROOT"
 
 REGISTRY="${REGISTRY:-tztcloud}"
 LOCAL_REGISTRY="${LOCAL_REGISTRY:-local}"
-TAG="${TAG:-v1.3.0}"
+TAG="${TAG:-v2.0.0}"
 PLATFORMS="${PLATFORMS:-linux/amd64}"
 PYTORCH_INDEX_URL="${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
 CUDA_VERSION="${CUDA_VERSION:-13.2.1}"
@@ -220,6 +225,29 @@ cmd_validate() {
   echo "All compose snippets valid (${#snippets[@]} file(s))."
 }
 
+# Unit tests run in throwaway containers so the host needs no Go or Python.
+GO_TEST_MODULES=(openai-chat-runner openai-embeddings-runner)
+PY_TEST_PACKAGES=(openai-audio-runner openai-tts-runner openai-image-generation-runner rerank-runner)
+
+cmd_test() {
+  local failed=0
+  for mod in "${GO_TEST_MODULES[@]}"; do
+    echo "==> go test ${mod}"
+    docker run --rm -v "${ROOT}:/src" -w "/src/${mod}" -e GOFLAGS=-mod=mod \
+      "golang:${GO_VERSION}-alpine" sh -c 'go vet ./... && go test ./...' || failed=1
+  done
+  for pkg in "${PY_TEST_PACKAGES[@]}"; do
+    echo "==> python unittest ${pkg}"
+    docker run --rm -v "${ROOT}:/src" -w "/src/${pkg}/src" \
+      "python:${PYTHON_VERSION}-slim" python -m unittest discover -s . -p 'test_*.py' -t . || failed=1
+  done
+  if [ "${failed}" -ne 0 ]; then
+    echo "tests failed" >&2
+    exit 1
+  fi
+  echo "All tests passed."
+}
+
 cmd_clean() {
   for name in "${ALL_IMAGES[@]}"; do
     docker rmi "$(img_tag "${name}")" 2>/dev/null || true
@@ -237,6 +265,7 @@ case "${cmd}" in
   build)    cmd_build "$@" ;;
   push)     cmd_push  "$@" ;;
   validate) cmd_validate ;;
+  test)     cmd_test ;;
   clean)    cmd_clean ;;
   help|-h|--help) cmd_help ;;
   *) echo "unknown subcommand: ${cmd}" >&2; cmd_help; exit 2 ;;
