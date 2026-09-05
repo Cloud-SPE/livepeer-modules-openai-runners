@@ -21,6 +21,21 @@ or move to [`CHANGELOG.md`](./CHANGELOG.md).
   `nvidia-container-toolkit` but breaks anything that shells out to
   `nvidia-smi` or `/usr/local/cuda`.
 
+- **Pin PyTorch.** `torch` is unpinned in every CUDA Dockerfile; the cu128
+  index resolved 2.11 and the cu126 index 2.14 on 2026-09-04. With two
+  flavors floating independently the Pascal build can drift from the default
+  one. Pin per flavor.
+- **Validate the `-pascal` flavor on real sm_61 hardware.** Built by the
+  release workflow from cu126 wheels (which carry sm_60 kernels) but never
+  run on a GTX 1080. The GPU probe's architecture check is the only guard.
+- **End-to-end attach + certification.** Point a real pool member agent
+  (`livepeer-network-modules` ≥ 3686b67) at each image, confirm the exception
+  queue is empty and the offer freezes with the identity the contract
+  declared. The contract shapes are unit-tested against the agent's parser
+  rules and the catalog's match values only.
+- **Python runtime tests.** The FastAPI apps load a model at import; only the
+  pure `contract.py` / `gpu_probe.py` modules are tested. A model-free app
+  fixture would let the routes be exercised in CI.
 - **Bump PyTorch wheel index to `cu130` once published.** Currently using
   `cu128` (latest CUDA 12.x wheels) on the CUDA 13 base via forward-compat.
   Switch is a one-line change to `PYTORCH_INDEX_URL` in
@@ -36,6 +51,12 @@ or move to [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## Considered, not committed
 
+- **Weighted output-token billing through the broker.** `OUTPUT_TOKEN_WEIGHT`
+  only affects the chat runner's own header/trailer; the declared
+  `openai-usage` extractor reads the body. If weighted billing is wanted it is
+  a broker-side option on `openai-usage`, not a runner-side count (agreed with
+  the network-modules team, 2026-09-04).
+
 - **Consolidate Go proxies.** `openai-chat-runner` and `openai-embeddings-runner`
   share a lot of structure. A single binary with subcommands is an option;
   current decision is to keep them separate.
@@ -48,4 +69,6 @@ or move to [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## Completed
 
-See [`CHANGELOG.md`](./CHANGELOG.md).
+- ~~**Runner contract migration (v2.0.0).**~~ Every image serves
+  `GET /.well-known/livepeer-runner`; `/options` removed; colon-form ids;
+  `BROKER-CONTRACT.md` rewritten; tests in CI. See [`CHANGELOG.md`](./CHANGELOG.md).

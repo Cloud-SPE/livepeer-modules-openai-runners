@@ -10,12 +10,12 @@ one process per broker-dispatched container.
 
 | Image | Language | Capability |
 |---|---|---|
-| `openai-chat-runner` | Go | `openai-chat-completions` (proxy in front of vLLM / Ollama) |
-| `openai-embeddings-runner` | Go | `openai-text-embeddings` (proxy in front of vLLM / Ollama) |
-| `openai-audio-runner` | Python | `openai-audio-transcriptions` + `openai-audio-translations` (Whisper) |
-| `openai-tts-runner` | Python | `openai-audio-speech` (Kokoro TTS) |
-| `openai-image-generation-runner` | Python | `image-generation` (diffusers) |
-| `rerank-runner` | Python | `rerank` (Cohere-compatible CrossEncoder) |
+| `openai-chat-runner` | Go | `openai:chat-completions` (proxy in front of vLLM / Ollama / a hosted vendor) |
+| `openai-embeddings-runner` | Go | `openai:embeddings` (proxy in front of vLLM / Ollama) |
+| `openai-audio-runner` | Python | `openai:audio-transcriptions` + `openai:audio-translations` (Whisper) |
+| `openai-tts-runner` | Python | `openai:audio-speech` (Kokoro TTS) |
+| `openai-image-generation-runner` | Python | `openai:images-generations` (diffusers) |
+| `rerank-runner` | Python | `text:rerank` (Cohere-compatible CrossEncoder) |
 | `image-model-downloader` | Python | One-shot HF model puller for image-gen + audio runners |
 | `rerank-model-downloader` | Python | One-shot HF model puller for rerank-runner |
 | `openai-tester` | Node | Integration smoke harness across runners |
@@ -68,12 +68,41 @@ No host Python, host Go, or host Node required.
 └── .github/workflows/                               # CI: build, release, doc-gardening
 ```
 
+## The runner contract
+
+Every image serves `GET /.well-known/livepeer-runner`: a JSON capability
+entry (or an array of them) naming its capability id, transports, paths,
+readiness probe, identity, and the work-unit extractor the broker should run.
+The pool member agent reads it once per attach; the broker never dials a
+runner. See [`BROKER-CONTRACT.md`](./BROKER-CONTRACT.md).
+
 ## Configuration
 
 Each runner accepts common env vars (`CAPABILITY_NAME`, `DEVICE`,
-`METRICS_ENABLED`) plus per-capability keys. See [`RUNNERS.md`](./RUNNERS.md)
-for the full per-runner list, and [`infra/env/`](./infra/env/) for copy-able
-`.env.example` templates.
+`METRICS_ENABLED`, and `MODEL_ALIAS` / `SERVED_MODEL_NAME` for the identity)
+plus per-capability keys. See [`RUNNERS.md`](./RUNNERS.md) for the full
+per-runner list, and [`infra/env/`](./infra/env/) for copy-able `.env.example`
+templates.
+
+## Building and testing
+
+```bash
+./build-images.sh build      # every image at TAG (default v2.0.0)
+./build-images.sh validate   # docker compose config on every overlay
+./build-images.sh test       # go vet/test + python unittest, all in Docker
+```
+
+The four CUDA runners' default images install PyTorch from the cu128 wheel
+index, which carries sm_75+ kernels only. For Pascal cards (sm_6x, e.g. a
+GTX 1080) build the `-pascal` flavor:
+
+```bash
+TAG=v2.0.0-pascal PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu126 \
+  ./build-images.sh build cuda13-python-base openai-audio-runner openai-tts-runner \
+  openai-image-generation-runner rerank-runner
+```
+
+The release workflow publishes both flavors.
 
 ## Compose overlays
 

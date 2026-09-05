@@ -17,8 +17,8 @@ is in [`SECURITY.md`](./SECURITY.md); this is the detail.
 ┌────────────────────────────────────────────────────────────────────┐
 │ capability broker                                                  │
 │   - Payment envelope validation (via payment-daemon)               │
-│   - Capability dispatch (route to a runner per host-config)        │
-│   - Mode dispatch + extractor logic (work-unit accounting)         │
+│   - Capability dispatch (to the path the runner's contract declared)│
+│   - Runs the extractor the runner's contract declared (work units) │
 │   - Strips identity headers before forwarding                      │
 └──────────────────────────┬─────────────────────────────────────────┘
                            │  Livepeer-Capability + Livepeer-Offering only

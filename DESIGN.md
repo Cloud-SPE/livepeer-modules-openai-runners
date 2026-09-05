@@ -65,7 +65,10 @@ to `cu130` once PyTorch publishes it is a one-line change in
 
 - **Customer auth + billing.** Lives upstream of the broker.
 - **Payment validation.** Broker-side; the runner sees only fully-authenticated requests.
-- **Capability registration.** The orch-coordinator scrapes each runner's
-  `GET /<capability>/options` endpoint.
-- **Mode dispatch + extractor logic.** Lives in the capability broker.
+- **Capability registration.** The runner declares itself at
+  `GET /.well-known/livepeer-runner`; the pool member agent relays that once
+  per attach and the broker validates, matches, and freezes the offer. The
+  runner owns the declaration, not the registration.
+- **Work-unit counting.** The runner declares the extractor in its contract;
+  the capability broker runs it.
 - **Wire-protocol middleware / gateway adapters.** Gateway-tier, not runner-tier.

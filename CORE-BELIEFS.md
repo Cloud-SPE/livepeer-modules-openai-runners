@@ -11,11 +11,13 @@ stage instead.
 
 ## 2. One image per capability
 
-Each Docker image declares exactly one `CAPABILITY_NAME`. Don't multiplex
-capabilities into a single image. The `openai-audio-runner` is the only
-exception — it serves two related capabilities
-(`openai-audio-transcriptions` + `openai-audio-translations`) from the same
-Whisper model load, but operates as one image.
+Each Docker image declares exactly one capability in its runner contract
+(`GET /.well-known/livepeer-runner`). Don't multiplex capabilities into a
+single image. The `openai-audio-runner` is the only exception — it serves two
+related capabilities (`openai:audio-transcriptions` +
+`openai:audio-translations`) from the same Whisper model load as a two-entry
+contract, but operates as one image. The runner says what it is; nothing else
+describes it.
 
 ## 3. Capability identity is image-tag-pinned
 
@@ -56,7 +58,7 @@ Every Dockerfile in `infra/dockerfiles/` is built with the repo root as build
 context. This is what lets each Dockerfile COPY both its runner's source and
 the offering manifest from `infra/offerings/`.
 
-## 10. Default tag is `v1.3.0`
+## 10. Default tag is `v2.0.0`
 
 Keep shared bases and downstream runner builds on the same tag unless the
 caller overrides `TAG=...`. Mixed tags between a base and its consumer is a
