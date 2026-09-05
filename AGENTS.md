@@ -70,13 +70,17 @@ under [`infra/compose/`](./infra/compose/); offering manifests under
 
 ## Doing work in this repo
 
-- **Build everything**: `./build-images.sh build`. Validates compose:
-  `./build-images.sh validate`. Runs every unit test in Docker:
-  `./build-images.sh test`. See [`build-images.sh`](./build-images.sh) for
-  subcommands.
-- **Default tag**: `v2.0.0`. Default registry: `tztcloud`. Override via
-  `TAG=` and `REGISTRY=` env vars. The `-pascal` flavor of the four CUDA
-  runners is the same Dockerfiles with `PYTORCH_INDEX_URL` on cu126.
+- **Build everything**: `./infra/scripts/build-images.sh` (substring filters
+  select a subset; bases are added). Push: `PUSH=1` on the same script —
+  clean tree only, digests printed and recorded under `infra/build/`.
+  Validate compose: `./infra/scripts/validate-compose.sh`. Unit tests in
+  Docker: `./infra/scripts/test.sh`. The root `build-images.sh` is a shim
+  for the old subcommands.
+- **Default tag and toolchain pins** live in
+  [`infra/build/image-versions.env`](./infra/build/image-versions.env)
+  (`v2.0.0`). Default registry: `tztcloud`. Override via `TAG=` and
+  `REGISTRY=`. The `-pascal` flavor of the four CUDA runners is the same
+  Dockerfiles with `PYTORCH_INDEX_URL` on cu126.
 - **All gestures are Docker-first.** Do not introduce steps that require host
   Python, host Go, or host Node.
 - **Build context is repo root.** Every Dockerfile in `infra/dockerfiles/`

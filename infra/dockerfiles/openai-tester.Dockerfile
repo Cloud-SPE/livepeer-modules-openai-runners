@@ -10,6 +10,10 @@ RUN npm ci --omit=dev
 COPY openai-tester/test-*.mjs openai-tester/generate-test-audio.sh openai-tester/test.ogg ./
 
 FROM node:${NODE_VERSION}-alpine
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 WORKDIR /app
 RUN apk add --no-cache ffmpeg \
     && adduser -D runner

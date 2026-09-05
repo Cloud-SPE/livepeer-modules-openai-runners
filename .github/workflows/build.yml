@@ -20,14 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate every compose overlay
-        run: ./build-images.sh validate
+        run: ./infra/scripts/validate-compose.sh
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Go and Python unit tests (in Docker)
-        run: ./build-images.sh test
+        run: ./infra/scripts/test.sh
 
   build:
     runs-on: ubuntu-latest
@@ -50,15 +50,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build dependent bases first
-        if: ${{ !contains(fromJSON('["python-base","cuda13-python-base"]'), matrix.image) }}
-        run: |
-          # ML and downloader images depend on a base built locally.
-          case "${{ matrix.image }}" in
-            openai-audio-runner|openai-tts-runner|openai-image-generation-runner|rerank-runner)
-              ./build-images.sh build cuda13-python-base ;;
-            image-model-downloader|rerank-model-downloader)
-              ./build-images.sh build python-base ;;
-          esac
+      # The script adds the base image a runner builds on, so one name is enough.
       - name: Build ${{ matrix.image }}
-        run: ./build-images.sh build ${{ matrix.image }}
+        run: ./infra/scripts/build-images.sh ${{ matrix.image }}

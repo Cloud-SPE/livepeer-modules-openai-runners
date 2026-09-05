@@ -47,6 +47,10 @@ const (
 	workUnitsHeader     = "X-Livepeer-Work-Units"
 )
 
+// Version is the build's version string, set by cmd/runner from the
+// linker-stamped value.
+var Version = "dev"
+
 // Run starts the runner with environment-driven config and blocks.
 func Run() {
 	addr := env("RUNNER_ADDR", ":8080")
@@ -98,8 +102,8 @@ func Run() {
 		handleModels(w, r, contractCfg, &discoveredModels)
 	})
 
-	log.Printf("openai-embeddings-runner listening on %s capability=%s upstream=%s upstream_kind=%s usage_field=%s",
-		addr, capability, upstream, upstreamKind, usageField)
+	log.Printf("openai-embeddings-runner %s listening on %s capability=%s upstream=%s upstream_kind=%s usage_field=%s",
+		Version, addr, capability, upstream, upstreamKind, usageField)
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           mux,

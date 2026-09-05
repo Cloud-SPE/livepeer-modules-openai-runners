@@ -52,6 +52,11 @@ const (
 	runnerErrorHeader   = "X-Livepeer-Runner-Error"
 )
 
+// Version is the build's version string, set by cmd/runner from the
+// linker-stamped value. Logged at startup so a container can say which
+// commit it is.
+var Version = "dev"
+
 // Run starts the runner with environment-driven config and blocks.
 func Run() {
 	cfg, err := configFromEnv()
@@ -95,7 +100,7 @@ func Run() {
 		handleModels(w, r, cfg, &discoveredModels)
 	})
 
-	slog.Info("openai-chat-runner listening", "addr", cfg.addr, "capability", cfg.capability,
+	slog.Info("openai-chat-runner listening", "version", Version, "addr", cfg.addr, "capability", cfg.capability,
 		"upstream", cfg.upstreamURL, "upstream_kind", cfg.upstreamKind, "usage_field", cfg.usageField)
 	srv := &http.Server{
 		Addr:              cfg.addr,

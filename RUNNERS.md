@@ -130,7 +130,7 @@ secret or vendor response body.
 Multi-arch (amd64 + arm64):
 
 ```bash
-./build-images.sh build openai-chat-runner
+./infra/scripts/build-images.sh openai-chat-runner
 ```
 
 ### What it declares
@@ -202,7 +202,7 @@ Contract metadata:
 Multi-arch (amd64 + arm64):
 
 ```bash
-./build-images.sh build openai-embeddings-runner
+./infra/scripts/build-images.sh openai-embeddings-runner
 ```
 
 ### What it declares
@@ -299,7 +299,7 @@ Whisper-large-v3 is ~3 GB on disk.
 amd64-only:
 
 ```bash
-./build-images.sh build openai-audio-runner
+./infra/scripts/build-images.sh openai-audio-runner
 ```
 
 ---
@@ -371,7 +371,7 @@ Kokoro-82M is ~165 MB on disk.
 amd64-only:
 
 ```bash
-./build-images.sh build openai-tts-runner
+./infra/scripts/build-images.sh openai-tts-runner
 ```
 
 The image installs `espeak-ng` and `ffmpeg` at runtime (phonemization +
@@ -463,7 +463,7 @@ mount a volume to persist across restarts.
 amd64-only:
 
 ```bash
-./build-images.sh build openai-image-generation-runner
+./infra/scripts/build-images.sh openai-image-generation-runner
 ```
 
 ---
@@ -543,7 +543,7 @@ zerank-2 is ~8 GB on disk.
 amd64-only:
 
 ```bash
-./build-images.sh build rerank-runner
+./infra/scripts/build-images.sh rerank-runner
 ```
 
 ### Dependency note
@@ -588,7 +588,7 @@ docker compose -f infra/compose/docker-compose.audio.yml run --rm image_model_do
 ### Build
 
 ```bash
-./build-images.sh build image-model-downloader
+./infra/scripts/build-images.sh image-model-downloader
 ```
 
 ---
@@ -609,7 +609,7 @@ Same shape as `image-model-downloader` but for the rerank model. Defaults to
 ### Build
 
 ```bash
-./build-images.sh build rerank-model-downloader
+./infra/scripts/build-images.sh rerank-model-downloader
 ```
 
 ---
@@ -678,5 +678,5 @@ docker run --rm \
 ### Build
 
 ```bash
-./build-images.sh build openai-tester
+./infra/scripts/build-images.sh openai-tester
 ```

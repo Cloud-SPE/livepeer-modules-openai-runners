@@ -33,6 +33,10 @@ RUN uv pip install --no-cache \
     && uv pip install --no-cache .
 
 FROM ${BASE_IMAGE} AS runtime
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 
 COPY --from=builder --chown=runner:runner /opt/venv /opt/venv
 COPY --chown=runner:runner infra/offerings/openai-image-generation-runner.yaml /etc/runner/offering.yaml

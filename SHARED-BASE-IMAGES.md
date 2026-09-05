@@ -67,7 +67,7 @@ If you find yourself adding a third base, first ask:
    factoring it out is worth a new base image?
 
 If both answers are yes, write the Dockerfile under `infra/dockerfiles/`,
-add a build helper to [`build-images.sh`](./build-images.sh), and document the
+add a row to the image table in [`infra/scripts/build-images.sh`](./infra/scripts/build-images.sh), and document the
 consumer mapping here.
 
 ## Flavors

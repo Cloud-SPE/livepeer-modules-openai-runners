@@ -46,6 +46,16 @@ read the audio runner's two-entry contract.
   both Go modules and Python `unittest` for the contract and GPU-probe
   modules, all in Docker; the build workflow gates on it.
 - `infra/env/*.env.example` are now tracked (they were gitignored by `env/`).
+- **Build system moves under `infra/`**, following
+  `livepeer-network-modules/infra/scripts/build-images.sh`: one image table
+  with base-image dependencies resolved automatically, substring filters,
+  `PUSH=1` that refuses a dirty tree and prints + records pushed digests
+  (`infra/build/<TAG>-digests.txt`), `VERSION` derived from git and stamped
+  into the Go binaries and every image's OCI version label, default tag and
+  toolchain pins in `infra/build/image-versions.env`. `validate-compose.sh`
+  and `test.sh` are separate scripts; the root `build-images.sh` is a shim
+  for the old subcommands. The release workflow builds and pushes in one
+  pass and attaches the digest records to the GitHub release.
 - `openai-chat-runner`: `UPSTREAM_KIND=ollama` is accepted again alongside
   `vllm`, `openai`, and `dashscope`; the vendor work had dropped it.
 

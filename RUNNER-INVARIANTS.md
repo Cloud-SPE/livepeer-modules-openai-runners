@@ -66,19 +66,23 @@ backtraces in the message.
 
 ## Image labels
 
-Every image SHOULD set:
+Every image sets, on its final stage:
 
 ```dockerfile
-LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners"
-LABEL org.opencontainers.image.licenses="MIT"
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 ```
 
-(Not enforced today; tracked in [`PLANS.md`](./PLANS.md) as a mechanical lint
-to add once the build is stable.)
+`VERSION` is passed by `infra/scripts/build-images.sh` from the git tag or
+sha (`-dirty` on uncommitted work); the Go runners also link it into the
+binary and log it at startup. `docker inspect` on any image answers "which
+commit is this".
 
 ## Tests
 
-`./build-images.sh test` runs every Go module's `go vet` + `go test` and every
+`./infra/scripts/test.sh` runs every Go module's `go vet` + `go test` and every
 Python runner's `unittest` (the contract and GPU-probe modules) inside Docker.
 The build workflow gates on it. A change to a contract shape without a test
 change is a red flag.

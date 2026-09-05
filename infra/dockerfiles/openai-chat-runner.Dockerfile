@@ -10,10 +10,15 @@ COPY openai-chat-runner/go.mod ./
 COPY openai-chat-runner/ ./
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /bin/chat-runner ./cmd/runner
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /bin/chat-runner ./cmd/runner
 
 FROM alpine:${ALPINE_VERSION}
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 RUN apk add --no-cache curl ca-certificates \
     && adduser -D runner
 USER runner

@@ -58,7 +58,7 @@ We pin the runtime base to CUDA 13 because the target hardware is current
 were not stable at lift time; we install the latest CUDA 12.x wheels
 (`cu128`) on the CUDA 13 base — CUDA forward-compat handles the gap. Bumping
 to `cu130` once PyTorch publishes it is a one-line change in
-[`build-images.sh`](./build-images.sh) (`PYTORCH_INDEX_URL`). Tracked in
+[`infra/build/image-versions.env`](./infra/build/image-versions.env) (`PYTORCH_INDEX_URL_DEFAULT`). Tracked in
 [`PLANS.md`](./PLANS.md).
 
 ## What stays out of this repo

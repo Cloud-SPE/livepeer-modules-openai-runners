@@ -60,9 +60,12 @@ the offering manifest from `infra/offerings/`.
 
 ## 10. Default tag is `v2.0.0`
 
-Keep shared bases and downstream runner builds on the same tag unless the
-caller overrides `TAG=...`. Mixed tags between a base and its consumer is a
-near-certain bug.
+It lives in one place, `infra/build/image-versions.env`, with the toolchain
+pins. Keep shared bases and downstream runner builds on the same tag unless
+the caller overrides `TAG=...`; the build script passes the base it built to
+each consumer, so mixed tags cannot happen through it. A tag is a pointer:
+`PUSH=1` prints and records the digest of every image it published, and a
+deployment pins the digest.
 
 ## 11. PyTorch wheels follow CUDA forward-compat
 

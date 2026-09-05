@@ -34,6 +34,10 @@ RUN uv pip install --no-cache \
     && python -c "from importlib.metadata import version; assert int(version('sentence-transformers').split('.', 1)[0]) < 5, version('sentence-transformers'); assert int(version('transformers').split('.', 1)[0]) < 5, version('transformers')"
 
 FROM ${BASE_IMAGE} AS runtime
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 
 COPY --from=builder --chown=runner:runner /opt/venv /opt/venv
 COPY --chown=runner:runner infra/offerings/rerank-runner.yaml /etc/runner/offering.yaml

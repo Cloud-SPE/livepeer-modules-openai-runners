@@ -39,8 +39,8 @@ or move to [`CHANGELOG.md`](./CHANGELOG.md).
 - **Bump PyTorch wheel index to `cu130` once published.** Currently using
   `cu128` (latest CUDA 12.x wheels) on the CUDA 13 base via forward-compat.
   Switch is a one-line change to `PYTORCH_INDEX_URL` in
-  [`build-images.sh`](./build-images.sh).
-- **First validated end-to-end build.** Verify `./build-images.sh build` runs
+  [`infra/build/image-versions.env`](./infra/build/image-versions.env).
+- **First validated end-to-end build.** Verify `./infra/scripts/build-images.sh` runs
   cleanly on a clean host with Docker + buildx installed. Open an issue with
   the first failure as the entry point.
 - **GPU smoke gate.** The CI workflows don't run GPU smoke (no GPUs on

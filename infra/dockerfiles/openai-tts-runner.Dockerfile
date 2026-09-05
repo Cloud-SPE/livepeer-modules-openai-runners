@@ -37,6 +37,10 @@ RUN uv pip install --no-cache \
     && python -m spacy download en_core_web_sm
 
 FROM ${BASE_IMAGE} AS runtime
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
