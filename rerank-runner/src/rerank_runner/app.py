@@ -140,9 +140,10 @@ async def rerank(req: RerankRequest, response: Response):
         )
 
     if _semaphore.locked() and _semaphore._value == 0:
-        raise HTTPException(
+        return JSONResponse(
             status_code=429,
-            detail={"error": {"message": f"Server busy — max queue size ({MAX_QUEUE_SIZE}) reached. Try again later.", "type": "rate_limit_error"}},
+            content={"error": "capacity_reached"},
+            headers={"Retry-After": "5"},
         )
 
     async with _semaphore:

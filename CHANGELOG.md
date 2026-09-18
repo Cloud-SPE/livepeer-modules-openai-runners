@@ -2,6 +2,14 @@
 
 All notable changes to this repo. Format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+- Align local queue-full responses in audio, TTS, image generation and rerank
+  with runner-contract 1.2.0: HTTP 429, `{"error":"capacity_reached"}` and
+  `Retry-After: 5`, allowing broker capacity normalization and backoff.
+- Add `bash infra/scripts/test-capacity.sh` to exercise all five Python
+  inference endpoints in runtime images without loading models or using a GPU.
+
 ## [v2.0.0] — 2026-09-04
 
 **Breaking.** Every image now serves the runner contract and the old

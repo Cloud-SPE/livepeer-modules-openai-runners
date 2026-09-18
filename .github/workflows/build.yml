@@ -53,3 +53,6 @@ jobs:
       # The script adds the base image a runner builds on, so one name is enough.
       - name: Build ${{ matrix.image }}
         run: ./infra/scripts/build-images.sh ${{ matrix.image }}
+      - name: Check capacity refusals in Python runtime
+        if: contains(fromJSON('["openai-audio-runner","openai-tts-runner","openai-image-generation-runner","rerank-runner"]'), matrix.image)
+        run: bash infra/scripts/test-capacity.sh ${{ matrix.image }}

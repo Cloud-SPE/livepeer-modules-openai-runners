@@ -8,7 +8,7 @@ offer from it. Every paid request then arrives through the agent's tunnel.
 
 The normative text lives in the `livepeer-network-modules` repo:
 
-- `livepeer-network-protocol/protocols/runner-contract.md` (1.1.0) — the
+- `livepeer-network-protocol/protocols/runner-contract.md` (1.2.0-draft) — the
   endpoint and body a runner serves.
 - `livepeer-network-protocol/protocols/runner-attach.md` §3.2 — every
   capability-entry field, its type, and what the broker validates.
@@ -206,13 +206,18 @@ statuses:
 | Healthy + happy path | 200 | capability-shaped |
 | Malformed input | 400 | `{"error": {"message": "...", "type": "invalid_request_error"}}` |
 | Auth-related (should never happen — the broker handles auth) | 401/403 | error shape |
-| Queue full | 429 | error shape + `Retry-After` header |
+| Local queue full, before inference | 429 | `{"error":"capacity_reached"}` + `Retry-After: 5` |
 | Loading or transient fault / upstream down | 503 | empty or error shape |
 | Out of memory | 507 | error shape |
 | Internal bug | 500 | error shape (NOT a stack trace) |
 
 The chat runner additionally marks refundable upstream failures (401, 403,
 429, 5xx, transport errors) with `X-Livepeer-Runner-Error: true`.
+
+The four Python runners return local capacity refusals directly, without a
+FastAPI `detail` wrapper or positive usage. The broker recognizes this exact
+private response and maps it to `503 capacity_exhausted` with bounded
+`Livepeer-Backoff`. Generic upstream rate limits retain their existing shape.
 
 ## 9. Example contracts
 

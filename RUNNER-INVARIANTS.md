@@ -87,6 +87,13 @@ Python runner's `unittest` (the contract and GPU-probe modules) inside Docker.
 The build workflow gates on it. A change to a contract shape without a test
 change is a red flag.
 
+After building Python runtime images, `bash infra/scripts/test-capacity.sh`
+checks all five inference routes over ASGI with saturated queues. It uses the
+checkout's source and the images' installed dependencies, without models or a
+GPU, and verifies HTTP 429 `{"error":"capacity_reached"}`, bounded retry advice,
+no positive usage, and no inference dispatch. CI runs each image's checks
+after its build; optional image-name arguments select a subset.
+
 ## What a non-conforming runner breaks
 
 - **Attach** if `/.well-known/livepeer-runner` is missing, not 200, larger
