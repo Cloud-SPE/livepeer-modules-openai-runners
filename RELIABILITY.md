@@ -20,7 +20,8 @@ the broker depends on.
 |---|---|
 | `POST <capability-path>` | The work. Returns OpenAI/Cohere-shaped JSON. |
 | `GET /healthz` | 200 once warm; 503 during load or after critical fault. |
-| `GET /<capability>/options` | Structured options payload for broker hydration. |
+| `GET /.well-known/livepeer-runner` | The runner contract: what this runner is and how to count its work. Read once per attach by the pool member agent. |
+| `GET /v1/models` | Go proxies only: OpenAI list of discovered models, backing the readiness probe. |
 | `GET /metrics` | Prometheus exposition. **Opt-in via `METRICS_ENABLED=true`.** |
 
 Per-runner details in [`RUNNERS.md`](./RUNNERS.md); cross-cutting shape rules
@@ -29,6 +30,9 @@ in [`RUNNER-INVARIANTS.md`](./RUNNER-INVARIANTS.md).
 ## Failure modes
 
 - **GPU absent with `DEVICE=cuda`** — exit non-zero at startup. Loud failure.
+- **GPU architecture unsupported by the torch build** (e.g. a GTX 1080 on the
+  default cu128 image) — exit non-zero at startup naming the `-pascal`
+  flavor, instead of dying on the first kernel launch.
 - **Model load failure** — log structured error; exit non-zero. Container
   restarts under orchestrator; broker's healthcheck flaps to unhealthy.
 - **Request queue full** — return 429 with `Retry-After`. Threshold is
@@ -41,13 +45,17 @@ in [`RUNNER-INVARIANTS.md`](./RUNNER-INVARIANTS.md).
 
 ## Work-unit reporting (billing-adjacent, but the broker handles billing)
 
-| Runner type | Mechanism |
-|---|---|
-| Streaming Go proxy (`openai-chat-runner`) | `X-Livepeer-Work-Units` HTTP trailer |
-| Non-streaming Go proxy (`openai-embeddings-runner`) | `X-Livepeer-Work-Units` HTTP response header |
-| Python runners | `usage.total_tokens` (or per-capability work unit) in response body |
+| Runner | Declared extractor | Runner-side signal |
+|---|---|---|
+| `openai-chat-runner` | `openai-usage` (body `usage`, final SSE frame on stream) | `X-Livepeer-Work-Units` trailer on stream (informational) |
+| `openai-embeddings-runner` | `openai-usage` | `X-Livepeer-Work-Units` header (informational) |
+| `openai-audio-runner` | `response-header` on `X-Livepeer-Work-Units` | header = ceil(audio seconds) |
+| `rerank-runner` | `response-header` on `X-Livepeer-Work-Units` | header = documents scored |
+| `openai-tts-runner` | `request-formula` (code points of `input`) | none; the broker counts the request |
+| `openai-image-generation-runner` | `request-formula` (`n`, default 1) | none; the broker counts the request |
 
-The broker maps each runner to the correct extractor via `host-config.yaml`.
+The runner declares the extractor in its contract; the broker runs it. See
+[`BROKER-CONTRACT.md`](./BROKER-CONTRACT.md) §4.
 
 ## Metrics surface (when `METRICS_ENABLED=true`)
 

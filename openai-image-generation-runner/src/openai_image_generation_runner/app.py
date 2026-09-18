@@ -9,7 +9,7 @@ from typing import Optional
 
 import torch
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from .diffusers_loader import (
@@ -18,10 +18,12 @@ from .diffusers_loader import (
     get_default_guidance,
     get_default_steps,
 )
+from .contract import CONTRACT_PATH, DEFAULT_CAPABILITY, build_contract
 from .gpu_probe import fail_fast_if_cuda_requested_without_gpu
 
 MODEL_ID = os.environ.get("MODEL_ID", "")
-CAPABILITY_NAME = os.environ.get("CAPABILITY_NAME", "image-generation")
+CAPABILITY_NAME = os.environ.get("CAPABILITY_NAME", DEFAULT_CAPABILITY)
+PROVIDER = "diffusers"
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
 RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8080"))
 MAX_QUEUE_SIZE = int(os.environ.get("MAX_QUEUE_SIZE", "5"))
@@ -43,6 +45,15 @@ if DTYPE_STR.lower() not in DTYPE_MAP:
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("image-runner")
+
+CONTRACT = build_contract(
+    CAPABILITY_NAME,
+    model_id=MODEL_ID,
+    provider=PROVIDER,
+    default_width=DEFAULT_WIDTH,
+    default_height=DEFAULT_HEIGHT,
+    response_formats=["b64_json"],
+)
 
 _diffusers = DiffusersPipeline()
 _semaphore: Optional[asyncio.Semaphore] = None
@@ -160,9 +171,10 @@ def _generate_images_sync(req: ImageGenerationRequest) -> list[bytes]:
 @app.post("/v1/images/generations", response_model=ImageGenerationResponse)
 async def create_image(req: ImageGenerationRequest):
     if _semaphore.locked() and _semaphore._value == 0:
-        raise HTTPException(
+        return JSONResponse(
             status_code=429,
-            detail={"error": {"message": f"Server busy — max queue size ({MAX_QUEUE_SIZE}) reached. Try again later.", "type": "rate_limit_error"}},
+            content={"error": "capacity_reached"},
+            headers={"Retry-After": "5"},
         )
 
     async with _semaphore:
@@ -195,12 +207,9 @@ async def healthz():
     return {"status": "ok", "model": MODEL_ID, "device": DEVICE}
 
 
-async def _options():
-    return {"models": [MODEL_ID]}
-
-
-app.add_api_route("/options", _options, methods=["GET"])
-app.add_api_route(f"/{CAPABILITY_NAME}/options", _options, methods=["GET"])
+@app.get(CONTRACT_PATH)
+async def runner_contract():
+    return JSONResponse(CONTRACT)
 
 
 if METRICS_ENABLED:

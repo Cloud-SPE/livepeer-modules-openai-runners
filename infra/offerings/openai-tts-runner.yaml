@@ -1,4 +1,4 @@
-capability: openai-audio-speech
+capability: openai:audio-speech
 description: |
   Kokoro-based text-to-speech runner. Serves the OpenAI-compatible
   /v1/audio/speech endpoint with format negotiation (mp3, opus, aac,

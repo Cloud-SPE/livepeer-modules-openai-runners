@@ -3,7 +3,7 @@
 
 ARG REGISTRY=tztcloud
 ARG LOCAL_REGISTRY=local
-ARG TAG=v1.3.0
+ARG TAG=v2.0.0
 ARG BASE_IMAGE=${LOCAL_REGISTRY}/cuda13-python-base:${TAG}
 # PyTorch wheels: cu130 once published; cu128 (latest cu12x) until then.
 ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
@@ -36,6 +36,10 @@ RUN uv pip install --no-cache \
     && uv pip install --no-cache .
 
 FROM ${BASE_IMAGE} AS runtime
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/Cloud-SPE/livepeer-modules-openai-runners" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
@@ -49,7 +53,9 @@ RUN mkdir -p /models && chown -R runner:runner /models /etc/runner
 
 VOLUME /models
 
-ENV CAPABILITY_NAME=openai-audio-transcriptions \
+# CAPABILITY_NAME unset: the contract advertises both openai:audio-transcriptions
+# and openai:audio-translations. Set it to one of the two to serve one entry.
+ENV CAPABILITY_NAME= \
     MODEL_ID=openai/whisper-large-v3 \
     MODEL_DIR=/models \
     RUNNER_PORT=8080 \

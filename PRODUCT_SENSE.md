@@ -4,19 +4,22 @@ Who uses these runners and what they're optimizing for.
 
 ## Direct consumer: the capability broker
 
-The capability broker is the only direct consumer. It receives requests from
-the gateway tier, validates payment, picks a runner per `host-config.yaml`,
-and forwards the request. The runner sees only fully-authenticated HTTP at
-its declared endpoint plus two informational headers (`Livepeer-Capability`,
-`Livepeer-Offering`).
+The capability broker is the only direct consumer, reached through the pool
+member agent on the runner's host. The agent reads the runner's contract once
+per attach and relays it; the broker validates it, matches it to a catalog
+template, receives requests from the gateway tier, validates payment, and
+dispatches to the path the runner declared. The runner sees only
+fully-authenticated HTTP at its declared endpoint plus informational headers
+(`Livepeer-Runner-Local-Id`, `Livepeer-Capability`, `Livepeer-Offering`).
 
 What the broker needs from a runner:
 
 - A stable HTTP surface per capability.
 - A `GET /healthz` that returns 200 once warm.
-- A `GET /<capability>/options` for runtime capability discovery.
-- A way to report work-units for billing (response body field for non-streaming,
-  `X-Livepeer-Work-Units` header/trailer for proxies).
+- A `GET /.well-known/livepeer-runner` contract: capability id, transports,
+  paths, readiness, identity, and the work-unit extractor to run.
+- A body or `X-Livepeer-Work-Units` header/trailer the declared extractor can
+  read, where the count is the runner's to know.
 - Optional `/metrics` for operator observability.
 
 ## Indirect consumers

@@ -10,12 +10,12 @@ one process per broker-dispatched container.
 
 | Image | Language | Capability |
 |---|---|---|
-| `openai-chat-runner` | Go | `openai-chat-completions` (proxy in front of vLLM / Ollama) |
-| `openai-embeddings-runner` | Go | `openai-text-embeddings` (proxy in front of vLLM / Ollama) |
-| `openai-audio-runner` | Python | `openai-audio-transcriptions` + `openai-audio-translations` (Whisper) |
-| `openai-tts-runner` | Python | `openai-audio-speech` (Kokoro TTS) |
-| `openai-image-generation-runner` | Python | `image-generation` (diffusers) |
-| `rerank-runner` | Python | `rerank` (Cohere-compatible CrossEncoder) |
+| `openai-chat-runner` | Go | `openai:chat-completions` (proxy in front of vLLM / Ollama / a hosted vendor) |
+| `openai-embeddings-runner` | Go | `openai:embeddings` (proxy in front of vLLM / Ollama) |
+| `openai-audio-runner` | Python | `openai:audio-transcriptions` + `openai:audio-translations` (Whisper) |
+| `openai-tts-runner` | Python | `openai:audio-speech` (Kokoro TTS) |
+| `openai-image-generation-runner` | Python | `openai:images-generations` (diffusers) |
+| `rerank-runner` | Python | `text:rerank` (Cohere-compatible CrossEncoder) |
 | `image-model-downloader` | Python | One-shot HF model puller for image-gen + audio runners |
 | `rerank-model-downloader` | Python | One-shot HF model puller for rerank-runner |
 | `openai-tester` | Node | Integration smoke harness across runners |
@@ -31,12 +31,12 @@ Two shared base images underpin the Python runners:
 Per [`CORE-BELIEFS.md`](./CORE-BELIEFS.md): every gesture is Docker-first.
 
 ```bash
-./build-images.sh build            # build all images (bases first)
-./build-images.sh build openai-audio-runner   # build a single image
-./build-images.sh validate         # validate every compose overlay in infra/compose/
-./build-images.sh push             # push all to ${REGISTRY} (requires docker login)
-./build-images.sh clean            # remove locally-built images
-./build-images.sh help             # show all subcommands
+./infra/scripts/build-images.sh                  # build all images (bases first)
+./infra/scripts/build-images.sh audio-runner     # a subset by substring; its base is added
+./infra/scripts/validate-compose.sh              # validate every compose overlay in infra/compose/
+./infra/scripts/test.sh                          # go + python unit tests in Docker
+PUSH=1 ./infra/scripts/build-images.sh           # build + push (clean tree only; prints digests)
+./build-images.sh help                           # the root shim keeps the old subcommands
 ```
 
 No host Python, host Go, or host Node required.
@@ -52,7 +52,9 @@ No host Python, host Go, or host Node required.
 ├── CORE-BELIEFS.md, BROKER-CONTRACT.md, TRUST-MODEL.md
 ├── CANONICAL-CAPABILITIES.md, SHARED-BASE-IMAGES.md, RUNNER-INVARIANTS.md
 ├── RUNNERS.md                      # per-runner sections (READMEs + runbooks)
-├── build-images.sh, setup-models.sh
+├── build-images.sh (shim), setup-models.sh
+├── infra/scripts/   # build-images.sh, validate-compose.sh, test.sh
+├── infra/build/     # image-versions.env (default TAG + toolchain pins), git-version.sh, <tag>-digests.txt
 ├── infra/
 │   ├── compose/        # 7 docker-compose overlays
 │   ├── offerings/      # per-runner offering.yaml manifests
@@ -68,18 +70,58 @@ No host Python, host Go, or host Node required.
 └── .github/workflows/                               # CI: build, release, doc-gardening
 ```
 
+## The runner contract
+
+Every image serves `GET /.well-known/livepeer-runner`: a JSON capability
+entry (or an array of them) naming its capability id, transports, paths,
+readiness probe, identity, and the work-unit extractor the broker should run.
+The pool member agent reads it once per attach; the broker never dials a
+runner. See [`BROKER-CONTRACT.md`](./BROKER-CONTRACT.md).
+
 ## Configuration
 
 Each runner accepts common env vars (`CAPABILITY_NAME`, `DEVICE`,
-`METRICS_ENABLED`) plus per-capability keys. See [`RUNNERS.md`](./RUNNERS.md)
-for the full per-runner list, and [`infra/env/`](./infra/env/) for copy-able
-`.env.example` templates.
+`METRICS_ENABLED`, and `MODEL_ALIAS` / `SERVED_MODEL_NAME` for the identity)
+plus per-capability keys. See [`RUNNERS.md`](./RUNNERS.md) for the full
+per-runner list, and [`infra/env/`](./infra/env/) for copy-able `.env.example`
+templates.
+
+## Building and testing
+
+```bash
+./infra/scripts/build-images.sh          # every image at TAG (default from infra/build/image-versions.env)
+./infra/scripts/validate-compose.sh      # docker compose config on every overlay
+./infra/scripts/test.sh                  # go vet/test + python unittest, all in Docker
+PUSH=1 ./infra/scripts/build-images.sh   # build + push; refuses a dirty tree; prints and records digests
+```
+
+Same pattern as `livepeer-network-modules/infra/scripts/build-images.sh`:
+positional substring filters, `PUSH=1` to publish, `VERSION` derived from
+the git tag or sha (with `-dirty` on uncommitted work) and stamped into the
+Go binaries and every image's `org.opencontainers.image.version` label.
+Pushed digests are appended to `infra/build/<TAG>-digests.txt`; pin those,
+not the tag.
+
+The four CUDA runners' default images install PyTorch from the cu128 wheel
+index, which carries sm_75+ kernels only. For Pascal cards (sm_6x, e.g. a
+GTX 1080) build the `-pascal` flavor of the audio, TTS and rerank runners.
+There is no image-generation variant: FLUX.1-dev does not fit an 8 GB card
+whatever the CUDA base, and the catalog does not admit it.
+
+```bash
+TAG=v2.0.0-pascal PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu126 \
+  ./infra/scripts/build-images.sh openai-audio-runner openai-tts-runner rerank-runner
+```
+
+The release workflow publishes both flavors.
 
 ## Compose overlays
 
 Per-backend compose overlays live in [`infra/compose/`](./infra/compose/):
 
 - `docker-compose.openai-chat-runner.yml` — chat-runner sidecar.
+- `docker-compose.openai-chat-runner.openai.yml` — chat-runner configured for OpenAI vendor pass-through.
+- `docker-compose.openai-chat-runner.dashscope.yml` — chat-runner configured for DashScope international vendor pass-through.
 - `docker-compose.openai-embeddings-runner.yml` — embeddings-runner sidecar.
 - `docker-compose.vllm.chat.yml` — vLLM upstream for chat.
 - `docker-compose.vllm.embeddings.yml` — vLLM upstream for embeddings.

@@ -14,7 +14,7 @@
 
 services:
   openai_embeddings_runner:
-    image: ${REGISTRY:-tztcloud}/openai-embeddings-runner:${TAG:-v1.3.0}
+    image: ${REGISTRY:-tztcloud}/openai-embeddings-runner:${TAG:-v2.0.0}
     container_name: openai_embeddings_runner
     hostname: openai_embeddings_runner
     environment:
@@ -22,10 +22,10 @@ services:
       # Choose ONE upstream. vLLM (single model, fast) OR Ollama (multi-model, lazy).
       - UPSTREAM_URL=${UPSTREAM_URL:-http://vllm_embeddings:8000/v1/embeddings}
       - UPSTREAM_KIND=${UPSTREAM_KIND:-vllm}
-      - CAPABILITY_NAME=openai-text-embeddings
+      - CAPABILITY_NAME=openai:embeddings
       - USAGE_FIELD=${USAGE_FIELD:-total_tokens}
       - MODEL_DISCOVERY_RETRIES=${MODEL_DISCOVERY_RETRIES:-10}
-      # Discovery metadata — broker hydrates these into host-config extras.
+      # Contract metadata — surfaced at GET /.well-known/livepeer-runner (identity + x-* keys).
       - SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-}
       - BACKEND_MODEL=${BACKEND_MODEL:-}
       - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-0}

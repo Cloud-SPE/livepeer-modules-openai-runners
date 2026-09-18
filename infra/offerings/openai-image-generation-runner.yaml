@@ -1,4 +1,4 @@
-capability: image-generation
+capability: openai:images-generations
 description: |
   Diffusers-based text-to-image runner. Supports SDXL, RealVisXL, and
   FLUX model families. Single-process / single-GPU; warmup pass runs at

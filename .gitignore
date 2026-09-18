@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 venv/
 env/
+!infra/env/
 .eggs/
 dist/
 build/
@@ -31,6 +32,12 @@ npm-debug.log*
 .env.local
 *.env
 !*.env.example
+
+# Public build inputs only; keep all other build files ignored.
+!infra/build/
+infra/build/*
+!infra/build/git-version.sh
+!infra/build/image-versions.env
 
 # IDE
 .idea/
